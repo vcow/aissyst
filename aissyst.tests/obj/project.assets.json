@@ -403,6 +403,19 @@
         "runtime": {
           "bin/placeholder/aissyst.core.dll": {}
         }
+      },
+      "aissyst.macos/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v10.0",
+        "dependencies": {
+          "aissyst.core": "1.0.0"
+        },
+        "compile": {
+          "bin/placeholder/aissyst.macos.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/aissyst.macos.dll": {}
+        }
       }
     }
   },
@@ -918,12 +931,18 @@
       "type": "project",
       "path": "../aissyst.core/aissyst.core.csproj",
       "msbuildProject": "../aissyst.core/aissyst.core.csproj"
+    },
+    "aissyst.macos/1.0.0": {
+      "type": "project",
+      "path": "../aissyst.macos/aissyst.macos.csproj",
+      "msbuildProject": "../aissyst.macos/aissyst.macos.csproj"
     }
   },
   "projectFileDependencyGroups": {
     "net10.0": [
       "Microsoft.NET.Test.Sdk >= 17.14.1",
       "aissyst.core >= 1.0.0",
+      "aissyst.macos >= 1.0.0",
       "coverlet.collector >= 6.0.4",
       "xunit >= 2.9.3",
       "xunit.runner.visualstudio >= 3.1.4"
@@ -958,6 +977,9 @@
           "projectReferences": {
             "/Users/vcow/Work/aissyst/aissyst.core/aissyst.core.csproj": {
               "projectPath": "/Users/vcow/Work/aissyst/aissyst.core/aissyst.core.csproj"
+            },
+            "/Users/vcow/Work/aissyst/aissyst.macos/aissyst.macos.csproj": {
+              "projectPath": "/Users/vcow/Work/aissyst/aissyst.macos/aissyst.macos.csproj"
             }
           }
         }

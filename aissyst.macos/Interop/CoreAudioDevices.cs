@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using aissyst.core.Audio;
+using aissyst.macos.Audio;
 
 namespace aissyst.macos.Interop;
 
@@ -18,6 +19,10 @@ internal static class CoreAudioDevices
 	private const uint StreamConfigurationProperty = 0x736C6179; // 'slay'
 	private const uint NameProperty = 0x6C6E616D; // 'lnam'
 	private const uint UidProperty = 0x75696420; // 'uid '
+	private const uint ProcessesProperty = 0x70727323; // 'prs#'
+	private const uint ProcessIdProperty = 0x70706964; // 'ppid'
+	private const uint ProcessBundleIdProperty = 0x70626964; // 'pbid'
+	private const uint ProcessOutputActiveProperty = 0x7069726F; // 'piro'
 	private const uint Utf8Encoding = 0x08000100;
 	private const int BadPropertySize = 0x2173697A; // '!siz'
 	private const int BadObject = 0x216F626A; // '!obj'
@@ -56,6 +61,35 @@ internal static class CoreAudioDevices
 			.ToArray();
 	}
 
+	[SupportedOSPlatform("macos14.2")]
+	internal static IReadOnlyList<AudioProcessInfo> GetAudioProcesses(CancellationToken cancellationToken)
+	{
+		var processObjects = ReadProperty(SystemObject, ProcessesProperty);
+		var processes = new List<AudioProcessInfo>();
+		for (var offset = 0; offset < processObjects.Length; offset += sizeof(uint))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var objectId = BitConverter.ToUInt32(processObjects, offset);
+			try
+			{
+				var pid = BitConverter.ToInt32(ReadProperty(objectId, ProcessIdProperty));
+				if (pid <= 0 || pid == Environment.ProcessId)
+					continue;
+
+				processes.Add(new AudioProcessInfo(
+					pid,
+					ReadString(objectId, ProcessBundleIdProperty, allowNull: true),
+					BitConverter.ToUInt32(ReadProperty(objectId, ProcessOutputActiveProperty)) != 0));
+			}
+			catch (CoreAudioException exception) when (exception.Status is BadObject or BadDevice)
+			{
+				// The process may have exited after its audio object was enumerated.
+			}
+		}
+
+		return processes;
+	}
+
 	private static int GetInputChannels(uint deviceId)
 	{
 		var data = ReadProperty(deviceId, StreamConfigurationProperty, InputScope);
@@ -72,24 +106,28 @@ internal static class CoreAudioDevices
 		return channels;
 	}
 
-	private static string ReadString(uint deviceId, uint selector)
+	private static string ReadString(uint deviceId, uint selector, bool allowNull = false)
 	{
 		var data = ReadProperty(deviceId, selector);
 		var value = (nint)BitConverter.ToInt64(data);
 		if (value == 0)
-			throw new InvalidOperationException("Core Audio returned a null device string reference.");
+		{
+			if (allowNull)
+				return string.Empty;
+			throw new InvalidOperationException("Core Audio returned a null object string reference.");
+		}
 
 		try
 		{
 			var capacity = checked((int)CFStringGetMaximumSizeForEncoding(CFStringGetLength(value), Utf8Encoding) + 1);
 			var buffer = new byte[capacity];
 			if (!CFStringGetCString(value, buffer, buffer.Length, Utf8Encoding))
-				throw new InvalidOperationException("Failed to read a Core Audio device string.");
+				throw new InvalidOperationException("Failed to read a Core Audio object string.");
 			return Encoding.UTF8.GetString(buffer, 0, Array.IndexOf(buffer, (byte)0));
 		}
 		finally
 		{
-			// The caller owns the CFString returned by the Name and DeviceUID properties.
+			// The caller owns the CFString returned by the Name, DeviceUID, and ProcessBundleID properties.
 			CFRelease(value);
 		}
 	}
@@ -112,7 +150,7 @@ internal static class CoreAudioDevices
 			return data;
 		}
 
-		throw new InvalidOperationException("Failed to obtain a stable Core Audio device list.");
+		throw new InvalidOperationException("Failed to read a stable Core Audio property value.");
 	}
 
 	private static void CheckStatus(int status, uint objectId, uint selector)
@@ -122,7 +160,7 @@ internal static class CoreAudioDevices
 	}
 
 	private sealed class CoreAudioException(int status, uint objectId, uint selector)
-		: InvalidOperationException($"Core Audio error: OSStatus={status} (0x{status:X8}), device={objectId}, property=0x{selector:X8}.")
+		: InvalidOperationException($"Core Audio error: OSStatus={status} (0x{status:X8}), object={objectId}, property=0x{selector:X8}.")
 	{
 		internal int Status { get; } = status;
 	}

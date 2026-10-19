@@ -18,7 +18,9 @@ public sealed record AudioFrame(
 
 public sealed record AudioApplication(
 	int Id,
-	string Name);
+	string Name,
+	bool IsOutputActive,
+	IReadOnlyList<int> ProcessIds);
 
 public sealed record AudioInputDevice(
 	string Id,
