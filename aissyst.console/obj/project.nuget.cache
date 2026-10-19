@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "aoaVJNghEbY=",
+  "dgSpecHash": "o/jsvD0WOU4=",
   "success": true,
-  "projectFilePath": "/Users/vcow/Work/zorg/aissyst/aissyst.console/aissyst.console.csproj",
+  "projectFilePath": "/Users/vcow/Work/aissyst/aissyst.console/aissyst.console.csproj",
   "expectedPackageFiles": [
     "/Users/vcow/.nuget/packages/microsoft.extensions.configuration/10.0.13/microsoft.extensions.configuration.10.0.13.nupkg.sha512",
     "/Users/vcow/.nuget/packages/microsoft.extensions.configuration.abstractions/10.0.13/microsoft.extensions.configuration.abstractions.10.0.13.nupkg.sha512",

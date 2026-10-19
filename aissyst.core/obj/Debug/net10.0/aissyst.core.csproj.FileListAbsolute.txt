@@ -9,3 +9,15 @@
 /Users/vcow/Work/zorg/aissyst/aissyst.core/obj/Debug/net10.0/refint/aissyst.core.dll
 /Users/vcow/Work/zorg/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.pdb
 /Users/vcow/Work/zorg/aissyst/aissyst.core/obj/Debug/net10.0/ref/aissyst.core.dll
+/Users/vcow/Work/aissyst/aissyst.core/bin/Debug/net10.0/aissyst.core.deps.json
+/Users/vcow/Work/aissyst/aissyst.core/bin/Debug/net10.0/aissyst.core.dll
+/Users/vcow/Work/aissyst/aissyst.core/bin/Debug/net10.0/aissyst.core.pdb
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.GeneratedMSBuildEditorConfig.editorconfig
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.AssemblyInfoInputs.cache
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.AssemblyInfo.cs
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.csproj.CoreCompileInputs.cache
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.sourcelink.json
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.dll
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/refint/aissyst.core.dll
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/aissyst.core.pdb
+/Users/vcow/Work/aissyst/aissyst.core/obj/Debug/net10.0/ref/aissyst.core.dll

@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "vCuXl8dtFR4=",
+  "dgSpecHash": "W+s9C06jOEA=",
   "success": true,
-  "projectFilePath": "/Users/vcow/Work/zorg/aissyst/aissyst.tests/aissyst.tests.csproj",
+  "projectFilePath": "/Users/vcow/Work/aissyst/aissyst.tests/aissyst.tests.csproj",
   "expectedPackageFiles": [
     "/Users/vcow/.nuget/packages/coverlet.collector/6.0.4/coverlet.collector.6.0.4.nupkg.sha512",
     "/Users/vcow/.nuget/packages/microsoft.codecoverage/17.14.1/microsoft.codecoverage.17.14.1.nupkg.sha512",

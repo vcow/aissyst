@@ -614,6 +614,32 @@
         "runtime": {
           "bin/placeholder/aissyst.core.dll": {}
         }
+      },
+      "aissyst.macos/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v10.0",
+        "dependencies": {
+          "aissyst.core": "1.0.0"
+        },
+        "compile": {
+          "bin/placeholder/aissyst.macos.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/aissyst.macos.dll": {}
+        }
+      },
+      "aissyst.windows/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v10.0",
+        "dependencies": {
+          "aissyst.core": "1.0.0"
+        },
+        "compile": {
+          "bin/placeholder/aissyst.windows.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/aissyst.windows.dll": {}
+        }
       }
     }
   },
@@ -1525,12 +1551,24 @@
       "type": "project",
       "path": "../aissyst.core/aissyst.core.csproj",
       "msbuildProject": "../aissyst.core/aissyst.core.csproj"
+    },
+    "aissyst.macos/1.0.0": {
+      "type": "project",
+      "path": "../aissyst.macos/aissyst.macos.csproj",
+      "msbuildProject": "../aissyst.macos/aissyst.macos.csproj"
+    },
+    "aissyst.windows/1.0.0": {
+      "type": "project",
+      "path": "../aissyst.windows/aissyst.windows.csproj",
+      "msbuildProject": "../aissyst.windows/aissyst.windows.csproj"
     }
   },
   "projectFileDependencyGroups": {
     "net10.0": [
       "Microsoft.Extensions.Hosting >= 10.0.13",
-      "aissyst.core >= 1.0.0"
+      "aissyst.core >= 1.0.0",
+      "aissyst.macos >= 1.0.0",
+      "aissyst.windows >= 1.0.0"
     ]
   },
   "packageFolders": {
@@ -1539,11 +1577,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "/Users/vcow/Work/zorg/aissyst/aissyst.console/aissyst.console.csproj",
+      "projectUniqueName": "/Users/vcow/Work/aissyst/aissyst.console/aissyst.console.csproj",
       "projectName": "aissyst.console",
-      "projectPath": "/Users/vcow/Work/zorg/aissyst/aissyst.console/aissyst.console.csproj",
+      "projectPath": "/Users/vcow/Work/aissyst/aissyst.console/aissyst.console.csproj",
       "packagesPath": "/Users/vcow/.nuget/packages/",
-      "outputPath": "/Users/vcow/Work/zorg/aissyst/aissyst.console/obj/",
+      "outputPath": "/Users/vcow/Work/aissyst/aissyst.console/obj/",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "/Users/vcow/.nuget/NuGet/NuGet.Config"
@@ -1557,10 +1595,17 @@
       },
       "frameworks": {
         "net10.0": {
+          "framework": "net10.0",
           "targetAlias": "net10.0",
           "projectReferences": {
-            "/Users/vcow/Work/zorg/aissyst/aissyst.core/aissyst.core.csproj": {
-              "projectPath": "/Users/vcow/Work/zorg/aissyst/aissyst.core/aissyst.core.csproj"
+            "/Users/vcow/Work/aissyst/aissyst.core/aissyst.core.csproj": {
+              "projectPath": "/Users/vcow/Work/aissyst/aissyst.core/aissyst.core.csproj"
+            },
+            "/Users/vcow/Work/aissyst/aissyst.macos/aissyst.macos.csproj": {
+              "projectPath": "/Users/vcow/Work/aissyst/aissyst.macos/aissyst.macos.csproj"
+            },
+            "/Users/vcow/Work/aissyst/aissyst.windows/aissyst.windows.csproj": {
+              "projectPath": "/Users/vcow/Work/aissyst/aissyst.windows/aissyst.windows.csproj"
             }
           }
         }
@@ -1579,6 +1624,7 @@
     },
     "frameworks": {
       "net10.0": {
+        "framework": "net10.0",
         "targetAlias": "net10.0",
         "dependencies": {
           "Microsoft.Extensions.Hosting": {

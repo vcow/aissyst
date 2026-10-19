@@ -9,7 +9,9 @@
       "aissyst.console/1.0.0": {
         "dependencies": {
           "Microsoft.Extensions.Hosting": "10.0.13",
-          "aissyst.core": "1.0.0"
+          "aissyst.core": "1.0.0",
+          "aissyst.macos": "1.0.0",
+          "aissyst.windows": "1.0.0"
         },
         "runtime": {
           "aissyst.console.dll": {}
@@ -404,6 +406,28 @@
             "fileVersion": "1.0.0.0"
           }
         }
+      },
+      "aissyst.macos/1.0.0": {
+        "dependencies": {
+          "aissyst.core": "1.0.0"
+        },
+        "runtime": {
+          "aissyst.macos.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "aissyst.windows/1.0.0": {
+        "dependencies": {
+          "aissyst.core": "1.0.0"
+        },
+        "runtime": {
+          "aissyst.windows.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
       }
     }
   },
@@ -610,6 +634,16 @@
       "hashPath": "system.diagnostics.eventlog.10.0.13.nupkg.sha512"
     },
     "aissyst.core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "aissyst.macos/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "aissyst.windows/1.0.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

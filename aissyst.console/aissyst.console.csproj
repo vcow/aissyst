@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\aissyst.core\aissyst.core.csproj" />
+    <ProjectReference Include="..\aissyst.windows\aissyst.windows.csproj" />
+    <ProjectReference Include="..\aissyst.macos\aissyst.macos.csproj" />
   </ItemGroup>
 
   <ItemGroup>

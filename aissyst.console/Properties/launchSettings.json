@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "aissyst.console": {
+      "commandName": "Project"
+    }
+  }
+}
