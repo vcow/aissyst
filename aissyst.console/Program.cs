@@ -20,6 +20,8 @@ else
 	throw new NotImplementedException("The solution isn't implemented for specified platform.");
 }
 
+builder.Services.AddScoped<CaptureSessionContext>();
+builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();
 using var host = builder.Build();
 
