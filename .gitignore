@@ -1,5 +1,31 @@
-.idea
-.vs
+# .NET build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+
+# Test and coverage output
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coveragexml
+
+# Rider, ReSharper and Visual Studio local state
+.idea/
+.vs/
+_ReSharper*/
+*.DotSettings.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 .utmp
-**/bin/
-**/obj/
+
+# Operating system metadata
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# Captured audio
+/recordings/

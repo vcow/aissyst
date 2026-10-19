@@ -6,8 +6,9 @@ using Microsoft.Extensions.Logging;
 
 namespace aissyst.tests;
 
-public class CaptureSessionTests
+public class CaptureSessionTests : IDisposable
 {
+	private readonly string _outputDirectory = Path.Combine(Path.GetTempPath(), $"aissyst-recording-tests-{Guid.NewGuid():N}");
 	private static readonly AudioInputDevice Microphone = new("test-microphone", "Test microphone", 1, true);
 	private static readonly AudioApplication Application = new(123, "Test application", false, new[] { 123 });
 
@@ -98,12 +99,92 @@ public class CaptureSessionTests
 		}
 	}
 
-	private static IHost CreateHost()
+	[Fact]
+	public async Task ManualCompletionIgnoresSilenceAndCompletesBothStreamsWithoutStoppingListening()
+	{
+		using var host = CreateHost();
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		session.Start();
+		await session.CompleteRecordingsAsync();
+		await capture.EmitMicrophoneAsync(Frame(0));
+		await capture.EmitApplicationAsync(Frame(0.001f));
+		await session.CompleteRecordingsAsync();
+		Assert.Empty(Directory.GetFiles(_outputDirectory, "*.wav"));
+
+		await capture.EmitMicrophoneAsync(Frame(0.5f));
+		await capture.EmitApplicationAsync(Frame(-0.5f));
+		await session.CompleteRecordingsAsync();
+		Assert.Single(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
+		Assert.Single(Directory.GetFiles(_outputDirectory, "application-*.wav"));
+		Assert.False(session.Completion.IsCompleted);
+
+		await session.CompleteRecordingsAsync();
+		Assert.Equal(2, Directory.GetFiles(_outputDirectory, "*.wav").Length);
+		await capture.EmitMicrophoneAsync(Frame(0.25f));
+		await session.CompleteRecordingsAsync();
+		Assert.Equal(2, Directory.GetFiles(_outputDirectory, "microphone-*.wav").Length);
+	}
+
+	[Fact]
+	public async Task SilenceTimeoutCompletesApplicationEvenIfItStopsDeliveringFrames()
+	{
+		using var host = CreateHost(TimeSpan.FromMilliseconds(80));
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		session.Start();
+		await host.Services.GetRequiredService<TestAudioCapture>().EmitApplicationAsync(Frame(0.5f));
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		while (Directory.GetFiles(_outputDirectory, "application-*.wav").Length == 0)
+		{
+			await Task.Delay(20, timeout.Token);
+		}
+		Assert.Empty(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
+		Assert.False(session.Completion.IsCompleted);
+	}
+
+	[Fact]
+	public async Task DisposingSessionFlushesAnUnfinishedRecording()
+	{
+		using var host = CreateHost();
+		await using (var scope = host.Services.CreateAsyncScope())
+		{
+			scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+			var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+			session.Start();
+			await host.Services.GetRequiredService<TestAudioCapture>().EmitMicrophoneAsync(Frame(0.5f));
+		}
+		var path = Assert.Single(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
+		var bytes = await File.ReadAllBytesAsync(path);
+		Assert.Equal(44 + 320 * sizeof(short), bytes.Length);
+		Assert.Empty(Directory.GetFiles(_outputDirectory, "*.tmp"));
+	}
+
+	private static AudioFrame Frame(float value)
+	{
+		return new AudioFrame(Enumerable.Repeat(value, 320).ToArray(), new AudioFormat(16000, 1), TimeSpan.Zero);
+	}
+
+	private IHost CreateHost(TimeSpan? silenceTimeout = null)
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		builder.Services.AddScoped<CaptureSessionContext>();
 		builder.Services.AddScoped<CaptureSession>();
+		builder.Services.AddSingleton(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1), recordingDirectory: _outputDirectory));
+		builder.Services.AddSingleton<TestAudioCapture>();
+		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
 		return builder.Build();
+	}
+
+	public void Dispose()
+	{
+		if (Directory.Exists(_outputDirectory))
+		{
+			Directory.Delete(_outputDirectory, recursive: true);
+		}
 	}
 }

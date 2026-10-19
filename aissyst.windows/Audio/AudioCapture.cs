@@ -14,7 +14,7 @@ public class AudioCapture : IAudioCapture
 		throw new NotImplementedException();
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(CancellationToken cancellationToken = default)
+	public IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(string deviceId, CancellationToken cancellationToken = default)
 	{
 		throw new NotImplementedException();
 	}
@@ -24,7 +24,7 @@ public class AudioCapture : IAudioCapture
 		throw new NotImplementedException();
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(string applicationId,
+	public IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(AudioApplication application,
 		CancellationToken cancellationToken = default)
 	{
 		throw new NotImplementedException();

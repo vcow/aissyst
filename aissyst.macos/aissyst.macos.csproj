@@ -11,4 +11,21 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <NativeCaptureHelper>$(MSBuildProjectDirectory)/obj/$(Configuration)/$(TargetFramework)/native/aissyst-audio-helper</NativeCaptureHelper>
+  </PropertyGroup>
+
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <None Include="$(NativeCaptureHelper)" Link="aissyst-audio-helper" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="BuildNativeCaptureHelper" BeforeTargets="PrepareForBuild"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))"
+          Inputs="$(MSBuildProjectDirectory)/Native/AudioCaptureHelper.mm;$(MSBuildProjectDirectory)/Native/Info.plist"
+          Outputs="$(NativeCaptureHelper)">
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(NativeCaptureHelper)'))" />
+    <Exec Command="xcrun clang++ -std=c++20 -fobjc-arc -mmacosx-version-min=14.2 -O2 -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Foundation &quot;$(MSBuildProjectDirectory)/Native/AudioCaptureHelper.mm&quot; -Wl,-sectcreate,__TEXT,__info_plist,&quot;$(MSBuildProjectDirectory)/Native/Info.plist&quot; -o &quot;$(NativeCaptureHelper)&quot;" />
+    <Exec Command="/usr/bin/codesign --force --sign - --identifier com.aissyst.audio-helper &quot;$(NativeCaptureHelper)&quot;" />
+  </Target>
+
 </Project>

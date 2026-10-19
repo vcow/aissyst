@@ -20,6 +20,9 @@ else
 	throw new NotImplementedException("The solution isn't implemented for specified platform.");
 }
 
+var settings = new ApplicationSettings(TimeSpan.FromSeconds(1));
+builder.Services.AddSingleton(settings);
+
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();

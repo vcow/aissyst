@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>com.aissyst.audio-helper</string>
+    <key>CFBundleName</key><string>aissyst Audio Capture</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Capture microphone audio for local recording and transcription.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Capture the selected application's audio for local recording and transcription.</string>
+</dict>
+</plist>

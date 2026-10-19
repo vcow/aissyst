@@ -27,19 +27,36 @@ public class AudioCapture : IAudioCapture
 		return Task.FromResult(MacApplications.GetApplications(cancellationToken));
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(CancellationToken cancellationToken = default)
+	public IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(string deviceId, CancellationToken cancellationToken = default)
 	{
-		throw new NotImplementedException();
+		EnsureCaptureSupported();
+		ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+		return NativeAudioCapture.ReadAsync("microphone", deviceId, cancellationToken);
 	}
 
 	public IAsyncEnumerable<AudioFrame> CaptureSystemAudioAsync(CancellationToken cancellationToken = default)
 	{
-		throw new NotImplementedException();
+		EnsureCaptureSupported();
+		return NativeAudioCapture.ReadAsync("system", null, cancellationToken);
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(string applicationId,
+	public IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(AudioApplication application,
 		CancellationToken cancellationToken = default)
 	{
-		throw new NotImplementedException();
+		EnsureCaptureSupported();
+		ArgumentNullException.ThrowIfNull(application);
+		if (application.ProcessIds.Count == 0 || application.ProcessIds.Any(pid => pid <= 0))
+		{
+			throw new ArgumentException("The selected application has no valid audio processes.", nameof(application));
+		}
+		return NativeAudioCapture.ReadAsync("application", string.Join(",", application.ProcessIds.Distinct()), cancellationToken);
+	}
+
+	private static void EnsureCaptureSupported()
+	{
+		if (!OperatingSystem.IsMacOSVersionAtLeast(14, 2))
+		{
+			throw new PlatformNotSupportedException("Audio capture requires macOS 14.2 or later.");
+		}
 	}
 }

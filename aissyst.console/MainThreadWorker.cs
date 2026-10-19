@@ -70,7 +70,8 @@ public class MainThreadWorker : BackgroundService
 		{
 			// Console input and the active session stop with the host.
 		}
-		catch (Exception exception) when (exception is InvalidOperationException or PlatformNotSupportedException)
+		catch (Exception exception) when (exception is InvalidOperationException or PlatformNotSupportedException
+			or IOException or UnauthorizedAccessException)
 		{
 			await Console.Error.WriteLineAsync($"Failed to run the console workflow: {exception.Message}");
 			Environment.ExitCode = 1;
@@ -93,16 +94,22 @@ public class MainThreadWorker : BackgroundService
 
 		Console.WriteLine($"Available {sourceName}s:");
 		for (var index = 0; index < items.Count; index++)
+		{
 			Console.WriteLine($"{index + 1}. {getName(items[index])}");
+		}
 
 		while (true)
 		{
 			Console.Write($"Select {sourceName} by number (1-{items.Count}), or enter Q to quit: ");
 			var input = await ConsoleInput.ReadLineAsync(cancellationToken);
 			if (input == null || input.Trim().Equals("q", StringComparison.OrdinalIgnoreCase))
+			{
 				return null;
+			}
 			if (int.TryParse(input, out var number) && number >= 1 && number <= items.Count)
+			{
 				return items[number - 1];
+			}
 
 			Console.WriteLine($"Invalid selection. Enter a number from 1 to {items.Count}.");
 		}
@@ -121,19 +128,42 @@ public class MainThreadWorker : BackgroundService
 			session.Start();
 			sessionStarted = true;
 
-			Console.WriteLine("Session started (placeholder).");
+			Console.WriteLine("Session started. Waiting for audio.");
 			Console.WriteLine(Console.IsInputRedirected
-				? "Enter S to stop the session or Q to quit, then press Enter. Ctrl+C also quits."
-				: "Press S to stop the session, Q to quit, or Ctrl+C to quit.");
-			while (true)
+				? "Enter R to finish active recordings, S to stop listening, or Q to quit, then press Enter."
+				: "Press R to finish active recordings, S to stop listening, or Q/Ctrl+C to quit.");
+			using var inputCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+			try
 			{
-				var command = (await ConsoleInput.ReadCommandAsync(stoppingToken))?.Trim();
-				if (command == null || command.Equals("q", StringComparison.OrdinalIgnoreCase))
-					return true;
-				if (command.Equals("s", StringComparison.OrdinalIgnoreCase))
-					return false;
+				while (true)
+				{
+					var input = ConsoleInput.ReadCommandAsync(inputCancellation.Token);
+					if (await Task.WhenAny(input, session.Completion) == session.Completion)
+					{
+						await session.Completion;
+						return true;
+					}
+					var command = (await input)?.Trim();
+					if (command == null || command.Equals("q", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+					if (command.Equals("s", StringComparison.OrdinalIgnoreCase))
+					{
+						return false;
+					}
+					if (command.Equals("r", StringComparison.OrdinalIgnoreCase))
+					{
+						await session.CompleteRecordingsAsync(stoppingToken);
+						continue;
+					}
 
-				Console.WriteLine("Unknown command. Use S to stop the session or Q to quit.");
+					Console.WriteLine("Unknown command. Use R to finish recordings, S to stop listening, or Q to quit.");
+				}
+			}
+			finally
+			{
+				await inputCancellation.CancelAsync();
 			}
 		}
 		finally

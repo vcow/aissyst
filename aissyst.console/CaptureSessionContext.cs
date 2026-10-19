@@ -17,7 +17,9 @@ public sealed class CaptureSessionContext
 		ArgumentNullException.ThrowIfNull(microphone);
 		ArgumentNullException.ThrowIfNull(application);
 		if (_microphone != null)
+		{
 			throw new InvalidOperationException("The session context has already been initialized.");
+		}
 
 		_microphone = microphone;
 		_application = application;

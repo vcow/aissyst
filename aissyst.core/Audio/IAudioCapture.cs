@@ -16,6 +16,8 @@ public sealed record AudioFrame(
 	AudioFormat Format,
 	TimeSpan Timestamp);
 
+public sealed record AudioRecording(ReadOnlyMemory<float> Samples, AudioFormat Format);
+
 public sealed record AudioApplication(
 	int Id,
 	string Name,
@@ -32,8 +34,8 @@ public interface IAudioCapture
 {
 	Task<IReadOnlyList<AudioInputDevice>> GetInputDevicesAsync(CancellationToken cancellationToken = default);
 	Task<IReadOnlyList<AudioApplication>> GetApplicationsAsync(CancellationToken cancellationToken = default);
-	IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(CancellationToken cancellationToken = default);
+	IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(string deviceId, CancellationToken cancellationToken = default);
 	IAsyncEnumerable<AudioFrame> CaptureSystemAudioAsync(CancellationToken cancellationToken = default);
-	IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(string applicationId,
+	IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(AudioApplication application,
 		CancellationToken cancellationToken = default);
 }
