@@ -1,5 +1,6 @@
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -11,14 +12,16 @@ public class MainThreadWorker : BackgroundService
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IHostApplicationLifetime _applicationLifetime;
 	private readonly IApplicationSettings _settings;
+	private readonly ITranscriber _transcriber;
 
 	public MainThreadWorker(IAudioCapture audioCapture, IServiceScopeFactory scopeFactory,
-		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings)
+		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ITranscriber transcriber)
 	{
 		_audioCapture = audioCapture;
 		_scopeFactory = scopeFactory;
 		_applicationLifetime = applicationLifetime;
 		_settings = settings;
+		_transcriber = transcriber;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,6 +38,8 @@ public class MainThreadWorker : BackgroundService
 			{
 				throw new InvalidOperationException("The configured audio sources are not supported.");
 			}
+
+			await _transcriber.InitializeAsync(stoppingToken);
 
 			AudioInputDevice? microphone = null;
 			AudioApplication? application = null;

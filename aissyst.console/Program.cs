@@ -1,6 +1,7 @@
 ﻿using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -26,6 +27,8 @@ IApplicationSettings settings = new ApplicationSettings(
 	availableSources: AudioSourceType.Microphone);
 
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });
+builder.Services.AddSingleton<ITranscriber, WhisperTranscriber>();
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();

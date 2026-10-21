@@ -29,3 +29,6 @@ Desktop.ini
 
 # Captured audio
 /recordings/
+
+# Downloaded transcription models (including application output directories)
+models/

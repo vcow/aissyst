@@ -14,4 +14,8 @@ public interface IApplicationSettings
 	AudioSourceType AvailableSources { get; }
 	TimeSpan PauseUntilRecordingStops { get; }
 	float SignalThreshold { get; }
+	string TranscriptionModelPath { get; }
+	Uri TranscriptionModelUrl { get; }
+	string TranscriptionModelSha256 { get; }
+	string TranscriptionLanguage { get; }
 }

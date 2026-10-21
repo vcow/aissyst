@@ -1,6 +1,7 @@
 using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,8 +29,9 @@ public class AvailableSourcesTests
 		using var host = CreateHost();
 		var capture = new TestAudioCapture();
 		var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+		await using var transcriber = new TestTranscriber();
 		using var worker = new MainThreadWorker(capture, host.Services.GetRequiredService<IServiceScopeFactory>(),
-			lifetime, new ApplicationSettings(availableSources: sources));
+			lifetime, new ApplicationSettings(availableSources: sources), transcriber);
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 		try
 		{
@@ -49,6 +51,7 @@ public class AvailableSourcesTests
 		Assert.Equal(microphoneSelections != 0, output.ToString().Contains("Select microphone by number"));
 		Assert.Equal(applicationSelections != 0, output.ToString().Contains("Select application by number"));
 		Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
+		Assert.Equal(sources != AudioSourceType.None, transcriber.IsReady);
 		if (sources == AudioSourceType.None)
 		{
 			Assert.Contains("No audio sources are enabled", output.ToString());
@@ -104,5 +107,16 @@ public class AvailableSourcesTests
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		return builder.Build();
+	}
+
+	private sealed class TestTranscriber : ITranscriber
+	{
+		public bool IsReady { get; private set; }
+		public Task InitializeAsync(CancellationToken cancellationToken = default)
+		{
+			IsReady = true;
+			return Task.CompletedTask;
+		}
+		public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 }
