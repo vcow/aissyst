@@ -18,4 +18,5 @@ public interface IApplicationSettings
 	Uri TranscriptionModelUrl { get; }
 	string TranscriptionModelSha256 { get; }
 	string TranscriptionLanguage { get; }
+	int TranscriptionQueueCapacity { get; }
 }

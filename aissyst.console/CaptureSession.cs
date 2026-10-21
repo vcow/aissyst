@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Transcription;
 using Microsoft.Extensions.Hosting;
 
 namespace aissyst.console;
@@ -11,6 +12,7 @@ public sealed class CaptureSession : IAsyncDisposable
 	private readonly CancellationTokenSource _cancellation;
 	private readonly IAudioCapture _audioCapture;
 	private readonly IApplicationSettings _settings;
+	private readonly TranscriptionQueue _transcriptionQueue;
 	private readonly Stopwatch _clock = new();
 
 	private readonly Channel<SessionEvent> _events = Channel.CreateBounded<SessionEvent>(
@@ -23,17 +25,18 @@ public sealed class CaptureSession : IAsyncDisposable
 	private readonly string _recordingDirectory;
 
 	public CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, IApplicationSettings settings)
-		: this(context, applicationLifetime, audioCapture, settings, Path.GetFullPath("recordings"))
+		IAudioCapture audioCapture, IApplicationSettings settings, TranscriptionQueue transcriptionQueue)
+		: this(context, applicationLifetime, audioCapture, settings, transcriptionQueue, Path.GetFullPath("recordings"))
 	{
 	}
 
 	internal CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, IApplicationSettings settings, string recordingDirectory)
+		IAudioCapture audioCapture, IApplicationSettings settings, TranscriptionQueue transcriptionQueue, string recordingDirectory)
 	{
 		Context = context;
 		_audioCapture = audioCapture;
 		_settings = settings;
+		_transcriptionQueue = transcriptionQueue;
 		_recordingDirectory = recordingDirectory;
 		_cancellation = CancellationTokenSource.CreateLinkedTokenSource(applicationLifetime.ApplicationStopping);
 	}
@@ -230,6 +233,8 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			return Task.CompletedTask;
 		}
+		_transcriptionQueue.Enqueue(new TranscriptionRequest(Guid.NewGuid(), _sessionId, source,
+			DateTimeOffset.UtcNow, recording));
 
 		return source == AudioSourceType.Microphone
 			? OnMicrophoneRecordComplete(recording)

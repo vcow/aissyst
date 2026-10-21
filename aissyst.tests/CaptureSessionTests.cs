@@ -1,6 +1,7 @@
 using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -127,6 +128,17 @@ public class CaptureSessionTests : IDisposable
 		await capture.EmitMicrophoneAsync(Frame(0.25f));
 		await session.CompleteRecordingsAsync();
 		Assert.Equal(2, Directory.GetFiles(_outputDirectory, "microphone-*.wav").Length);
+		var queue = host.Services.GetRequiredService<TranscriptionQueue>();
+		Assert.Equal(3, queue.Count);
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		var first = await queue.DequeueAsync(timeout.Token);
+		var second = await queue.DequeueAsync(timeout.Token);
+		Assert.Equal(AudioSourceType.Microphone, first.Source);
+		Assert.Equal(AudioSourceType.Application, second.Source);
+		Assert.Equal(first.SessionId, second.SessionId);
+		Assert.NotEqual(first.Id, second.Id);
+		Assert.Equal(new AudioFormat(16000, 1), first.Recording.Format);
+		Assert.All(first.Recording.Samples.ToArray(), sample => Assert.Equal(0.5f, sample));
 	}
 
 	[Fact]
@@ -178,8 +190,10 @@ public class CaptureSessionTests : IDisposable
 			provider.GetRequiredService<CaptureSessionContext>(),
 			provider.GetRequiredService<IHostApplicationLifetime>(),
 			provider.GetRequiredService<IAudioCapture>(),
-			provider.GetRequiredService<IApplicationSettings>(), _outputDirectory));
+			provider.GetRequiredService<IApplicationSettings>(),
+			provider.GetRequiredService<TranscriptionQueue>(), _outputDirectory));
 		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1)));
+		builder.Services.AddSingleton<TranscriptionQueue>();
 		builder.Services.AddSingleton<TestAudioCapture>();
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
 		return builder.Build();

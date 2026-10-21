@@ -29,6 +29,8 @@ IApplicationSettings settings = new ApplicationSettings(
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });
 builder.Services.AddSingleton<ITranscriber, WhisperTranscriber>();
+builder.Services.AddSingleton<TranscriptionQueue>();
+builder.Services.AddSingleton(new ConsoleHotkeySettings());
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();

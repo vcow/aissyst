@@ -42,7 +42,9 @@ internal static class ConsoleInput
 	internal static async Task<string?> ReadCommandAsync(CancellationToken cancellationToken)
 	{
 		if (Console.IsInputRedirected)
+		{
 			return await ReadLineAsync(cancellationToken);
+		}
 
 		var key = await ReadKeyAsync(cancellationToken);
 		Console.WriteLine(key.KeyChar);
@@ -55,7 +57,9 @@ internal static class ConsoleInput
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			if (Console.KeyAvailable)
+			{
 				return Console.ReadKey(intercept: true);
+			}
 
 			await Task.Delay(50, cancellationToken);
 		}

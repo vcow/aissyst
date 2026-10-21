@@ -13,15 +13,20 @@ public class MainThreadWorker : BackgroundService
 	private readonly IHostApplicationLifetime _applicationLifetime;
 	private readonly IApplicationSettings _settings;
 	private readonly ITranscriber _transcriber;
+	private readonly TranscriptionQueue _transcriptionQueue;
+	private readonly ConsoleHotkeySettings _hotkeys;
 
 	public MainThreadWorker(IAudioCapture audioCapture, IServiceScopeFactory scopeFactory,
-		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ITranscriber transcriber)
+		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ITranscriber transcriber,
+		TranscriptionQueue transcriptionQueue, ConsoleHotkeySettings hotkeys)
 	{
 		_audioCapture = audioCapture;
 		_scopeFactory = scopeFactory;
 		_applicationLifetime = applicationLifetime;
 		_settings = settings;
 		_transcriber = transcriber;
+		_transcriptionQueue = transcriptionQueue;
+		_hotkeys = hotkeys;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -73,16 +78,21 @@ public class MainThreadWorker : BackgroundService
 			}
 			while (!stoppingToken.IsCancellationRequested)
 			{
-				Console.Write("Press Enter to start a session, or enter Q to quit: ");
+				Console.Write($"Press Enter to start a session, enter {_hotkeys.ClearQueue} to clear the transcription queue, or {_hotkeys.Quit} to quit: ");
 				var command = await ConsoleInput.ReadLineAsync(stoppingToken);
-				if (command == null || command.Trim().Equals("q", StringComparison.OrdinalIgnoreCase))
+				if (command == null || Matches(command, _hotkeys.Quit))
 				{
 					return;
+				}
+				if (Matches(command, _hotkeys.ClearQueue))
+				{
+					ClearTranscriptionQueue();
+					continue;
 				}
 
 				if (!string.IsNullOrWhiteSpace(command))
 				{
-					Console.WriteLine("Unknown command. Press Enter to start or enter Q to quit.");
+					Console.WriteLine($"Unknown command. Press Enter to start, enter {_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit.");
 					continue;
 				}
 
@@ -108,7 +118,7 @@ public class MainThreadWorker : BackgroundService
 		}
 	}
 
-	private static async Task<T?> SelectAsync<T>(IReadOnlyList<T> items, Func<T, string> getName, string sourceName,
+	private async Task<T?> SelectAsync<T>(IReadOnlyList<T> items, Func<T, string> getName, string sourceName,
 		CancellationToken cancellationToken) where T : class
 	{
 		Console.WriteLine();
@@ -126,11 +136,16 @@ public class MainThreadWorker : BackgroundService
 
 		while (true)
 		{
-			Console.Write($"Select {sourceName} by number (1-{items.Count}), or enter Q to quit: ");
+			Console.Write($"Select {sourceName} by number (1-{items.Count}), enter {_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit: ");
 			var input = await ConsoleInput.ReadLineAsync(cancellationToken);
-			if (input == null || input.Trim().Equals("q", StringComparison.OrdinalIgnoreCase))
+			if (input == null || Matches(input, _hotkeys.Quit))
 			{
 				return null;
+			}
+			if (Matches(input, _hotkeys.ClearQueue))
+			{
+				ClearTranscriptionQueue();
+				continue;
 			}
 			if (int.TryParse(input, out var number) && number >= 1 && number <= items.Count)
 			{
@@ -155,9 +170,9 @@ public class MainThreadWorker : BackgroundService
 			sessionStarted = true;
 
 			Console.WriteLine("Session started. Waiting for audio.");
-			Console.WriteLine(Console.IsInputRedirected
-				? "Enter R to finish active recordings, S to stop listening, or Q to quit, then press Enter."
-				: "Press R to finish active recordings, S to stop listening, or Q/Ctrl+C to quit.");
+			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {_hotkeys.FinishRecording} to finish active recordings, "
+				+ $"{_hotkeys.StopSession} to stop listening, {_hotkeys.ClearQueue} to clear the transcription queue, or {_hotkeys.Quit} to quit."
+				+ (Console.IsInputRedirected ? " Then press Enter." : " Ctrl+C also quits."));
 			using var inputCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 			try
 			{
@@ -170,21 +185,27 @@ public class MainThreadWorker : BackgroundService
 						return true;
 					}
 					var command = (await input)?.Trim();
-					if (command == null || command.Equals("q", StringComparison.OrdinalIgnoreCase))
+					if (command == null || Matches(command, _hotkeys.Quit))
 					{
 						return true;
 					}
-					if (command.Equals("s", StringComparison.OrdinalIgnoreCase))
+					if (Matches(command, _hotkeys.StopSession))
 					{
 						return false;
 					}
-					if (command.Equals("r", StringComparison.OrdinalIgnoreCase))
+					if (Matches(command, _hotkeys.ClearQueue))
+					{
+						ClearTranscriptionQueue();
+						continue;
+					}
+					if (Matches(command, _hotkeys.FinishRecording))
 					{
 						await session.CompleteRecordingsAsync(stoppingToken);
 						continue;
 					}
 
-					Console.WriteLine("Unknown command. Use R to finish recordings, S to stop listening, or Q to quit.");
+					Console.WriteLine($"Unknown command. Use {_hotkeys.FinishRecording} to finish recordings, {_hotkeys.StopSession} to stop listening, "
+						+ $"{_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit.");
 				}
 			}
 			finally
@@ -199,5 +220,16 @@ public class MainThreadWorker : BackgroundService
 				Console.WriteLine("Session stopped.");
 			}
 		}
+	}
+
+	private void ClearTranscriptionQueue()
+	{
+		var removed = _transcriptionQueue.Clear();
+		Console.WriteLine($"Transcription queue cleared. Removed {removed} pending recording(s).");
+	}
+
+	private static bool Matches(string input, char hotkey)
+	{
+		return input.Trim().Equals(hotkey.ToString(), StringComparison.OrdinalIgnoreCase);
 	}
 }

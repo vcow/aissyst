@@ -11,13 +11,19 @@ public class ApplicationSettings : IApplicationSettings
 	public Uri TranscriptionModelUrl { get; }
 	public string TranscriptionModelSha256 { get; }
 	public string TranscriptionLanguage { get; }
+	public int TranscriptionQueueCapacity { get; }
 
 	public ApplicationSettings(TimeSpan? pauseUntilRecordingStops = null, float signalThreshold = 0.01f,
 		AudioSourceType availableSources = AudioSourceType.Both,
 		string? transcriptionModelPath = null, Uri? transcriptionModelUrl = null,
 		string transcriptionModelSha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
-		string transcriptionLanguage = "en")
+		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10)
 	{
+		if (transcriptionQueueCapacity <= 0)
+		{
+			throw new ArgumentOutOfRangeException(nameof(transcriptionQueueCapacity), "The transcription queue capacity must be positive.");
+		}
+		TranscriptionQueueCapacity = transcriptionQueueCapacity;
 		ArgumentException.ThrowIfNullOrWhiteSpace(transcriptionLanguage);
 		ArgumentException.ThrowIfNullOrWhiteSpace(transcriptionModelSha256);
 		if (transcriptionModelSha256.Length != 64 || !transcriptionModelSha256.All(Uri.IsHexDigit))
