@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Threading.Channels;
+using aissyst.core;
 using aissyst.core.Audio;
 using Microsoft.Extensions.Hosting;
 
@@ -9,21 +10,31 @@ public sealed class CaptureSession : IAsyncDisposable
 {
 	private readonly CancellationTokenSource _cancellation;
 	private readonly IAudioCapture _audioCapture;
-	private readonly ApplicationSettings _settings;
+	private readonly IApplicationSettings _settings;
 	private readonly Stopwatch _clock = new();
+
 	private readonly Channel<SessionEvent> _events = Channel.CreateBounded<SessionEvent>(
 		new BoundedChannelOptions(256) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+
 	private readonly string _sessionId = $"{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}";
 	private int _recordingNumber;
 	private bool _started;
 	private Task? _disposeTask;
+	private readonly string _recordingDirectory;
 
 	public CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, ApplicationSettings settings)
+		IAudioCapture audioCapture, IApplicationSettings settings)
+		: this(context, applicationLifetime, audioCapture, settings, Path.GetFullPath("recordings"))
+	{
+	}
+
+	internal CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
+		IAudioCapture audioCapture, IApplicationSettings settings, string recordingDirectory)
 	{
 		Context = context;
 		_audioCapture = audioCapture;
 		_settings = settings;
+		_recordingDirectory = recordingDirectory;
 		_cancellation = CancellationTokenSource.CreateLinkedTokenSource(applicationLifetime.ApplicationStopping);
 	}
 
@@ -37,9 +48,18 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			throw new InvalidOperationException("A session can only be started once. Create a new scope to start another session.");
 		}
-		_ = Context.Microphone;
-		_ = Context.Application;
-		Directory.CreateDirectory(_settings.RecordingDirectory);
+
+		var sources = _settings.AvailableSources;
+		if (sources == AudioSourceType.None || (sources & ~AudioSourceType.Both) != AudioSourceType.None)
+		{
+			throw new InvalidOperationException("At least one supported audio source must be enabled.");
+		}
+		if (sources.HasFlag(AudioSourceType.Microphone) != (Context.Microphone != null)
+			|| sources.HasFlag(AudioSourceType.Application) != (Context.Application != null))
+		{
+			throw new InvalidOperationException("The selected audio sources do not match the enabled audio sources.");
+		}
+		Directory.CreateDirectory(_recordingDirectory);
 		_started = true;
 		_clock.Start();
 		Completion = RunAsync(_cancellation.Token);
@@ -52,6 +72,7 @@ public sealed class CaptureSession : IAsyncDisposable
 			await Completion;
 			return;
 		}
+
 		var acknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		try
 		{
@@ -62,6 +83,7 @@ public sealed class CaptureSession : IAsyncDisposable
 			await Completion;
 			return;
 		}
+
 		var finished = await Task.WhenAny(acknowledgement.Task, Completion).WaitAsync(cancellationToken);
 		await finished;
 	}
@@ -77,12 +99,16 @@ public sealed class CaptureSession : IAsyncDisposable
 		using var application = new AudioRecorder(_settings);
 		using var producersCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		var token = producersCancellation.Token;
-		var producers = new[]
+		var producers = new List<Task>();
+		if (Context.Microphone is { } selectedMicrophone)
 		{
-			PumpAsync(ct => _audioCapture.CaptureMicrophoneAsync(Context.Microphone.Id, ct), AudioSourceType.Microphone, token),
-			PumpAsync(ct => _audioCapture.CaptureApplicationAudioAsync(Context.Application, ct), AudioSourceType.Application, token),
-			PumpTimerAsync(token)
-		};
+			producers.Add(PumpAsync(ct => _audioCapture.CaptureMicrophoneAsync(selectedMicrophone.Id, ct), AudioSourceType.Microphone, token));
+		}
+		if (Context.Application is { } selectedApplication)
+		{
+			producers.Add(PumpAsync(ct => _audioCapture.CaptureApplicationAudioAsync(selectedApplication, ct), AudioSourceType.Application, token));
+		}
+		producers.Add(PumpTimerAsync(token));
 		try
 		{
 			await foreach (var item in _events.Reader.ReadAllAsync(cancellationToken))
@@ -107,6 +133,7 @@ public sealed class CaptureSession : IAsyncDisposable
 						await HandleAsync(item, microphone, application);
 					}
 				}
+
 				await CompleteAsync(microphone, application);
 			}
 			finally
@@ -125,6 +152,7 @@ public sealed class CaptureSession : IAsyncDisposable
 			{
 				await _events.Writer.WriteAsync(new SessionEvent(EventKind.Frame, sourceType, frame, At: _clock.Elapsed), cancellationToken);
 			}
+
 			if (!cancellationToken.IsCancellationRequested)
 			{
 				throw new InvalidOperationException("The audio source ended unexpectedly.");
@@ -183,6 +211,7 @@ public sealed class CaptureSession : IAsyncDisposable
 					item.Acknowledgement!.TrySetException(exception);
 					throw;
 				}
+
 				break;
 			case EventKind.Failure:
 				throw new InvalidOperationException($"{item.Source} capture failed: {item.Error!.Message}", item.Error);
@@ -201,8 +230,10 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			return Task.CompletedTask;
 		}
+
 		return source == AudioSourceType.Microphone
-			? OnMicrophoneRecordComplete(recording) : OnApplicationRecordComplete(recording);
+			? OnMicrophoneRecordComplete(recording)
+			: OnApplicationRecordComplete(recording);
 	}
 
 	private Task OnMicrophoneRecordComplete(AudioRecording recording)
@@ -217,7 +248,7 @@ public sealed class CaptureSession : IAsyncDisposable
 
 	private async Task SaveRecordingAsync(string source, AudioRecording recording)
 	{
-		var path = Path.Combine(_settings.RecordingDirectory, $"{source}-{_sessionId}-{++_recordingNumber:D4}.wav");
+		var path = Path.Combine(_recordingDirectory, $"{source}-{_sessionId}-{++_recordingNumber:D4}.wav");
 		await WaveFile.WriteAsync(path, recording);
 		Console.WriteLine($"Saved {source} recording: {path}");
 	}
@@ -241,7 +272,19 @@ public sealed class CaptureSession : IAsyncDisposable
 		}
 	}
 
-	private enum EventKind { Frame, Tick, Complete, Failure }
-	private sealed record SessionEvent(EventKind Kind, AudioSourceType Source = AudioSourceType.Microphone,
-		AudioFrame? Frame = null, Exception? Error = null, TaskCompletionSource? Acknowledgement = null, TimeSpan At = default);
+	private enum EventKind
+	{
+		Frame,
+		Tick,
+		Complete,
+		Failure
+	}
+
+	private sealed record SessionEvent(
+		EventKind Kind,
+		AudioSourceType Source = AudioSourceType.Microphone,
+		AudioFrame? Frame = null,
+		Exception? Error = null,
+		TaskCompletionSource? Acknowledgement = null,
+		TimeSpan At = default);
 }

@@ -1,4 +1,5 @@
 ﻿using aissyst.console;
+using aissyst.core;
 using aissyst.core.Audio;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,9 +21,11 @@ else
 	throw new NotImplementedException("The solution isn't implemented for specified platform.");
 }
 
-var settings = new ApplicationSettings(TimeSpan.FromSeconds(1));
-builder.Services.AddSingleton(settings);
+IApplicationSettings settings = new ApplicationSettings(
+	pauseUntilRecordingStops: TimeSpan.FromSeconds(1),
+	availableSources: AudioSourceType.Microphone);
 
+builder.Services.AddSingleton(settings);
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();

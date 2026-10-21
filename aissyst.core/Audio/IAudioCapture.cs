@@ -1,12 +1,5 @@
 namespace aissyst.core.Audio;
 
-public enum AudioSourceType
-{
-	Microphone,
-	SystemOut,
-	Application
-}
-
 public readonly record struct AudioFormat(
 	int SampleRate,
 	int Channels);

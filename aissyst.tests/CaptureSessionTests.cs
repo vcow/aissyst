@@ -1,4 +1,5 @@
 using aissyst.console;
+using aissyst.core;
 using aissyst.core.Audio;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -173,8 +174,12 @@ public class CaptureSessionTests : IDisposable
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		builder.Services.AddScoped<CaptureSessionContext>();
-		builder.Services.AddScoped<CaptureSession>();
-		builder.Services.AddSingleton(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1), recordingDirectory: _outputDirectory));
+		builder.Services.AddScoped(provider => new CaptureSession(
+			provider.GetRequiredService<CaptureSessionContext>(),
+			provider.GetRequiredService<IHostApplicationLifetime>(),
+			provider.GetRequiredService<IAudioCapture>(),
+			provider.GetRequiredService<IApplicationSettings>(), _outputDirectory));
+		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1)));
 		builder.Services.AddSingleton<TestAudioCapture>();
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
 		return builder.Build();

@@ -1,9 +1,10 @@
 using System.Runtime.InteropServices;
+using aissyst.core;
 using aissyst.core.Audio;
 
 namespace aissyst.console;
 
-internal sealed class AudioRecorder(ApplicationSettings settings) : IDisposable
+internal sealed class AudioRecorder(IApplicationSettings settings) : IDisposable
 {
 	private readonly MemoryStream _samples = new();
 	private AudioFormat? _format;

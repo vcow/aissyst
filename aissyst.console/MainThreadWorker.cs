@@ -1,3 +1,4 @@
+using aissyst.core;
 using aissyst.core.Audio;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -9,42 +10,62 @@ public class MainThreadWorker : BackgroundService
 	private readonly IAudioCapture _audioCapture;
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IHostApplicationLifetime _applicationLifetime;
+	private readonly IApplicationSettings _settings;
 
 	public MainThreadWorker(IAudioCapture audioCapture, IServiceScopeFactory scopeFactory,
-		IHostApplicationLifetime applicationLifetime)
+		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings)
 	{
 		_audioCapture = audioCapture;
 		_scopeFactory = scopeFactory;
 		_applicationLifetime = applicationLifetime;
+		_settings = settings;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
 	{
 		try
 		{
-			if (!OperatingSystem.IsMacOS())
+			var sources = _settings.AvailableSources;
+			if (sources == AudioSourceType.None)
 			{
-				Console.WriteLine("Microphone and application selection is currently implemented only for macOS.");
+				Console.WriteLine("No audio sources are enabled. The application will exit.");
 				return;
 			}
-
-			var devices = await _audioCapture.GetInputDevicesAsync(stoppingToken);
-			var microphone = await SelectAsync(devices, device => device.Name, "microphone", stoppingToken);
-			if (microphone == null)
+			if ((sources & ~AudioSourceType.Both) != AudioSourceType.None)
 			{
-				return;
+				throw new InvalidOperationException("The configured audio sources are not supported.");
 			}
 
-			var applications = await _audioCapture.GetApplicationsAsync(stoppingToken);
-			var application = await SelectAsync(applications, app => app.Name, "application", stoppingToken);
-			if (application == null)
+			AudioInputDevice? microphone = null;
+			AudioApplication? application = null;
+			if (sources.HasFlag(AudioSourceType.Microphone))
 			{
-				return;
+				var devices = await _audioCapture.GetInputDevicesAsync(stoppingToken);
+				microphone = await SelectAsync(devices, device => device.Name, "microphone", stoppingToken);
+				if (microphone == null)
+				{
+					return;
+				}
+			}
+			if (sources.HasFlag(AudioSourceType.Application))
+			{
+				var applications = await _audioCapture.GetApplicationsAsync(stoppingToken);
+				application = await SelectAsync(applications, app => app.Name, "application", stoppingToken);
+				if (application == null)
+				{
+					return;
+				}
 			}
 
 			Console.WriteLine();
-			Console.WriteLine($"Selected microphone: {microphone.Name}");
-			Console.WriteLine($"Selected application: {application.Name}");
+			if (microphone != null)
+			{
+				Console.WriteLine($"Selected microphone: {microphone.Name}");
+			}
+			if (application != null)
+			{
+				Console.WriteLine($"Selected application: {application.Name}");
+			}
 			while (!stoppingToken.IsCancellationRequested)
 			{
 				Console.Write("Press Enter to start a session, or enter Q to quit: ");
@@ -116,7 +137,7 @@ public class MainThreadWorker : BackgroundService
 	}
 
 	// Returns true when the user quits or the input stream closes.
-	private async Task<bool> RunSessionAsync(AudioInputDevice microphone, AudioApplication application, CancellationToken stoppingToken)
+	private async Task<bool> RunSessionAsync(AudioInputDevice? microphone, AudioApplication? application, CancellationToken stoppingToken)
 	{
 		var sessionStarted = false;
 		try

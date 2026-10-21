@@ -1,14 +1,17 @@
+using aissyst.core;
+
 namespace aissyst.console;
 
-public class ApplicationSettings
+public class ApplicationSettings : IApplicationSettings
 {
+	public AudioSourceType AvailableSources { get; }
 	public TimeSpan PauseUntilRecordingStops { get; }
 	public float SignalThreshold { get; }
-	public string RecordingDirectory { get; }
 
 	public ApplicationSettings(TimeSpan? pauseUntilRecordingStops = null, float signalThreshold = 0.01f,
-		string? recordingDirectory = null)
+		AudioSourceType availableSources = AudioSourceType.Both)
 	{
+		AvailableSources = availableSources;
 		PauseUntilRecordingStops = pauseUntilRecordingStops ?? TimeSpan.FromSeconds(1);
 		if (PauseUntilRecordingStops <= TimeSpan.Zero)
 		{
@@ -19,6 +22,5 @@ public class ApplicationSettings
 			throw new ArgumentOutOfRangeException(nameof(signalThreshold));
 		}
 		SignalThreshold = signalThreshold;
-		RecordingDirectory = Path.GetFullPath(recordingDirectory ?? "recordings");
 	}
 }
