@@ -11,39 +11,72 @@ internal sealed class AudioRecorder(IApplicationSettings settings) : IDisposable
 	private TimeSpan _lastSignalAt;
 	private long _lastSignalLength;
 
-	internal AudioRecording? Append(AudioFrame frame, TimeSpan now)
+	internal IReadOnlyList<AudioRecording> Append(AudioFrame frame, TimeSpan now)
 	{
 		if (frame.Format.SampleRate <= 0 || frame.Format.Channels <= 0
+			|| frame.Format.Channels > int.MaxValue / sizeof(float)
 			|| frame.Samples.Length % frame.Format.Channels != 0)
 		{
 			throw new InvalidOperationException("Invalid PCM audio frame.");
 		}
 
-		var completed = _format.HasValue && _format != frame.Format ? Complete() : CompleteIfSilent(now);
-		double energy = 0;
 		foreach (var sample in frame.Samples.Span)
 		{
 			if (!float.IsFinite(sample))
 			{
 				throw new InvalidOperationException("The audio stream contains non-finite samples.");
 			}
-			energy += (double)sample * sample;
-		}
-		var hasSignal = frame.Samples.Length > 0
-			&& energy / frame.Samples.Length >= (double)settings.SignalThreshold * settings.SignalThreshold;
-		if (!hasSignal && _samples.Length == 0)
-		{
-			return completed;
 		}
 
-		_format = frame.Format;
-		_samples.Write(MemoryMarshal.AsBytes(frame.Samples.Span));
+		var recordings = new List<AudioRecording>();
+		var previous = _format.HasValue && _format != frame.Format ? Complete() : CompleteIfSilent(now);
+		if (previous != null)
+		{
+			recordings.Add(previous);
+		}
+
+		// Count PCM frames, not wall-clock time. Boundaries always contain all channels.
+		var durationFrames = decimal.Floor((decimal)settings.MaxRecordingDuration.Ticks
+			* frame.Format.SampleRate / TimeSpan.TicksPerSecond);
+		var maximumFrames = Math.Clamp(durationFrames, 1, int.MaxValue / sizeof(float) / frame.Format.Channels);
+		var maximumSamples = (int)maximumFrames * frame.Format.Channels;
+		var offset = 0;
+		while (offset < frame.Samples.Length)
+		{
+			var remainingCapacity = maximumSamples - (int)(_samples.Length / sizeof(float));
+			var count = Math.Min(remainingCapacity, frame.Samples.Length - offset);
+			AppendSamples(frame.Samples.Span.Slice(offset, count), frame.Format, now);
+			offset += count;
+			if (_samples.Length / sizeof(float) == maximumSamples)
+			{
+				if (Complete() is { } recording)
+				{
+					recordings.Add(recording);
+				}
+			}
+		}
+		return recordings;
+	}
+
+	private void AppendSamples(ReadOnlySpan<float> samples, AudioFormat format, TimeSpan now)
+	{
+		double energy = 0;
+		foreach (var sample in samples)
+		{
+			energy += (double)sample * sample;
+		}
+		var hasSignal = energy / samples.Length >= (double)settings.SignalThreshold * settings.SignalThreshold;
+		if (!hasSignal && _samples.Length == 0)
+		{
+			return;
+		}
+		_format = format;
+		_samples.Write(MemoryMarshal.AsBytes(samples));
 		if (hasSignal)
 		{
 			_lastSignalAt = now;
 			_lastSignalLength = _samples.Length;
 		}
-		return completed;
 	}
 
 	internal AudioRecording? CompleteIfSilent(TimeSpan now)

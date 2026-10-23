@@ -172,18 +172,42 @@ public class CaptureSessionTests
 		Assert.Equal(320, Assert.Single(record.Frames).Samples.Length);
 	}
 
+	[Fact]
+	public async Task DurationLimitPublishesBothSourcesAndKeepsListeningWithoutManualCompletion()
+	{
+		using var host = CreateHost(maxRecordingDuration: TimeSpan.FromSeconds(1));
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		session.Start();
+		var format = new AudioFormat(10, 1);
+		await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.5f, 20).ToArray(), format, TimeSpan.Zero));
+		await capture.EmitApplicationAsync(new AudioFrame(Enumerable.Repeat(0.25f, 20).ToArray(), format, TimeSpan.Zero));
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		while (_records.Count < 4)
+		{
+			await Task.Delay(10, timeout.Token);
+		}
+		Assert.Equal(2, _records.Count(record => record.Source == AudioSourceType.Microphone));
+		Assert.Equal(2, _records.Count(record => record.Source == AudioSourceType.Application));
+		Assert.All(_records, record => Assert.Equal(10, Assert.Single(record.Frames).Samples.Length));
+		Assert.False(session.Completion.IsCompleted);
+	}
+
 	private static AudioFrame Frame(float value)
 	{
 		return new AudioFrame(Enumerable.Repeat(value, 320).ToArray(), new AudioFormat(16000, 1), TimeSpan.Zero);
 	}
 
-	private IHost CreateHost(TimeSpan? silenceTimeout = null)
+	private IHost CreateHost(TimeSpan? silenceTimeout = null, TimeSpan? maxRecordingDuration = null)
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		builder.Services.AddScoped<CaptureSessionContext>();
 		builder.Services.AddScoped<CaptureSession>();
-		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1)));
+		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1),
+			maxRecordingDuration: maxRecordingDuration));
 		builder.Services.AddSingleton(new ConsoleHotkeySettings());
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<TestAudioCapture>();

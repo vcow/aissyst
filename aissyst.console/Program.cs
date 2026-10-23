@@ -28,6 +28,7 @@ else
 
 IApplicationSettings settings = new ApplicationSettings(
 	pauseUntilRecordingStops: TimeSpan.FromSeconds(1),
+	maxRecordingDuration: TimeSpan.FromSeconds(15),
 	availableSources: AudioSourceType.Both,
 	maxTranscriptionProcessingCount: 1,
 	maxTextProcessingCount: 1);
@@ -50,6 +51,7 @@ builder.Services.AddSingleton<ApplicationController>();
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(3));
 builder.Services.AddHostedService<MainThreadWorker>();
 using var host = builder.Build();
 

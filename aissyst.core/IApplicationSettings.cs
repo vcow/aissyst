@@ -13,6 +13,7 @@ public interface IApplicationSettings
 {
 	AudioSourceType AvailableSources { get; }
 	TimeSpan PauseUntilRecordingStops { get; }
+	TimeSpan MaxRecordingDuration { get; }
 	float SignalThreshold { get; }
 	string TranscriptionModelPath { get; }
 	Uri TranscriptionModelUrl { get; }

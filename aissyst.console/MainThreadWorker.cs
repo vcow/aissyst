@@ -101,12 +101,15 @@ public class MainThreadWorker : BackgroundService
 	private async Task<bool> RunSessionAsync(AudioInputDevice? microphone, AudioApplication? application, CancellationToken stoppingToken)
 	{
 		var sessionStarted = false;
+		var processingSessionStarted = false;
 		try
 		{
 			await using var scope = _scopeFactory.CreateAsyncScope();
 			var context = scope.ServiceProvider.GetRequiredService<CaptureSessionContext>();
 			context.Initialize(microphone, application);
 			var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+			await _controller.BeginSessionAsync(stoppingToken);
+			processingSessionStarted = true;
 			session.Start();
 			sessionStarted = true;
 
@@ -156,6 +159,12 @@ public class MainThreadWorker : BackgroundService
 		}
 		finally
 		{
+			if (processingSessionStarted)
+			{
+				Console.WriteLine("Finishing pending transcriptions and saving session text...");
+				// Capture has stopped, but the controller must remain active until its queues are drained.
+				await _controller.CompleteSessionAsync();
+			}
 			if (sessionStarted)
 			{
 				Console.WriteLine("Session stopped.");
