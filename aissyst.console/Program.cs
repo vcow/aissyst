@@ -24,7 +24,7 @@ else
 
 IApplicationSettings settings = new ApplicationSettings(
 	pauseUntilRecordingStops: TimeSpan.FromSeconds(1),
-	availableSources: AudioSourceType.Microphone);
+	availableSources: AudioSourceType.Application);
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });

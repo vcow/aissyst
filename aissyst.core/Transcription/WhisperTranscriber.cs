@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using aissyst.core.Audio;
 using Microsoft.Extensions.Logging;
 using Whisper.net;
 
@@ -52,6 +53,11 @@ public sealed class WhisperTranscriber(
 		{
 			_lifecycle.Release();
 		}
+	}
+
+	public Task<string> TranscribeAsync(IReadOnlyList<AudioFrame> frames, CancellationToken cancellationToken = default)
+	{
+		throw new NotImplementedException();
 	}
 
 	internal async Task<string> EnsureModelAsync(CancellationToken cancellationToken)

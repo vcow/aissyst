@@ -19,4 +19,6 @@ public interface IApplicationSettings
 	string TranscriptionModelSha256 { get; }
 	string TranscriptionLanguage { get; }
 	int TranscriptionQueueCapacity { get; }
+	int MaxTranscriptionProcessingCount { get; }
+	int MaxTextProcessingCount { get; }
 }

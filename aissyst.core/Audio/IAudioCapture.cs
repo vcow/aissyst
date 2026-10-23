@@ -28,7 +28,6 @@ public interface IAudioCapture
 	Task<IReadOnlyList<AudioInputDevice>> GetInputDevicesAsync(CancellationToken cancellationToken = default);
 	Task<IReadOnlyList<AudioApplication>> GetApplicationsAsync(CancellationToken cancellationToken = default);
 	IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(string deviceId, CancellationToken cancellationToken = default);
-	IAsyncEnumerable<AudioFrame> CaptureSystemAudioAsync(CancellationToken cancellationToken = default);
 	IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(AudioApplication application,
 		CancellationToken cancellationToken = default);
 }

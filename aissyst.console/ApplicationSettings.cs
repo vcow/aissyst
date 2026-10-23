@@ -12,12 +12,15 @@ public class ApplicationSettings : IApplicationSettings
 	public string TranscriptionModelSha256 { get; }
 	public string TranscriptionLanguage { get; }
 	public int TranscriptionQueueCapacity { get; }
+	public int MaxTranscriptionProcessingCount { get; }
+	public int MaxTextProcessingCount { get; }
 
 	public ApplicationSettings(TimeSpan? pauseUntilRecordingStops = null, float signalThreshold = 0.01f,
 		AudioSourceType availableSources = AudioSourceType.Both,
 		string? transcriptionModelPath = null, Uri? transcriptionModelUrl = null,
 		string transcriptionModelSha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
-		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10)
+		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10,
+		int maxTranscriptionProcessingCount = 3, int maxTextProcessingCount = 3)
 	{
 		if (transcriptionQueueCapacity <= 0)
 		{
@@ -47,5 +50,7 @@ public class ApplicationSettings : IApplicationSettings
 			throw new ArgumentOutOfRangeException(nameof(signalThreshold));
 		}
 		SignalThreshold = signalThreshold;
+		MaxTranscriptionProcessingCount = maxTranscriptionProcessingCount;
+		MaxTextProcessingCount = maxTextProcessingCount;
 	}
 }

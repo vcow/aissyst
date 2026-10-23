@@ -34,12 +34,6 @@ public class AudioCapture : IAudioCapture
 		return NativeAudioCapture.ReadAsync("microphone", deviceId, cancellationToken);
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureSystemAudioAsync(CancellationToken cancellationToken = default)
-	{
-		EnsureCaptureSupported();
-		return NativeAudioCapture.ReadAsync("system", null, cancellationToken);
-	}
-
 	public IAsyncEnumerable<AudioFrame> CaptureApplicationAudioAsync(AudioApplication application,
 		CancellationToken cancellationToken = default)
 	{

@@ -40,11 +40,6 @@ internal sealed class TestAudioCapture : IAudioCapture
 		return ReadAsync(_application, cancellationToken);
 	}
 
-	public IAsyncEnumerable<AudioFrame> CaptureSystemAudioAsync(CancellationToken cancellationToken = default)
-	{
-		return ReadAsync(_application, cancellationToken);
-	}
-
 	private static async Task EmitAsync(Channel<Emission> channel, AudioFrame frame)
 	{
 		var queued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

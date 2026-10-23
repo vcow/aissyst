@@ -168,6 +168,11 @@ public class AvailableSourcesTests
 
 	private sealed class TestTranscriber : ITranscriber
 	{
+		public Task<string> TranscribeAsync(IReadOnlyList<AudioFrame> frames, CancellationToken cancellationToken = default)
+		{
+			throw new NotImplementedException();
+		}
+
 		public bool IsReady { get; private set; }
 		public Task InitializeAsync(CancellationToken cancellationToken = default)
 		{
