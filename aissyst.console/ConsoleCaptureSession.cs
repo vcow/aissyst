@@ -26,23 +26,30 @@ public sealed class ConsoleCaptureSession(IAudioCapture audioCapture, IApplicati
 		}
 		if (settings.AvailableSources.HasFlag(AudioSourceType.Microphone))
 		{
-			SelectedMicrophone = await SelectAsync(await audioCapture.GetInputDevicesAsync(cancellationToken),
+			var (cancelled, microphone) = await SelectAsync(await audioCapture.GetInputDevicesAsync(cancellationToken),
 				device => device.Name, "microphone", cancellationToken);
-			if (SelectedMicrophone == null)
+			if (cancelled)
 			{
 				return;
 			}
+			SelectedMicrophone = microphone;
 		}
 		if (settings.AvailableSources.HasFlag(AudioSourceType.Application))
 		{
-			SelectedApplication = await SelectAsync(await audioCapture.GetApplicationsAsync(cancellationToken),
+			var (cancelled, application) = await SelectAsync(await audioCapture.GetApplicationsAsync(cancellationToken),
 				application => application.Name, "application", cancellationToken);
-			if (SelectedApplication == null)
+			if (cancelled)
 			{
 				return;
 			}
+			SelectedApplication = application;
 		}
 		HasSelectedSources = SelectedMicrophone != null || SelectedApplication != null;
+		if (!HasSelectedSources)
+		{
+			Console.WriteLine("No audio sources selected. The application will exit.");
+			return;
+		}
 		if (SelectedMicrophone != null)
 		{
 			Console.WriteLine($"Selected microphone: {SelectedMicrophone.Name}");
@@ -67,33 +74,33 @@ public sealed class ConsoleCaptureSession(IAudioCapture audioCapture, IApplicati
 		}
 	}
 
-	private async Task<T?> SelectAsync<T>(IReadOnlyList<T> items, Func<T, string> getName, string source,
+	private async Task<(bool Cancelled, T? Source)> SelectAsync<T>(IReadOnlyList<T> items, Func<T, string> getName, string source,
 		CancellationToken cancellationToken) where T : class
 	{
 		Console.WriteLine();
 		if (items.Count == 0)
 		{
 			Console.WriteLine($"No available {source}s found.");
-			return null;
 		}
 		Console.WriteLine($"Available {source}s:");
+		Console.WriteLine("0. None");
 		for (var index = 0; index < items.Count; index++)
 		{
 			Console.WriteLine($"{index + 1}. {getName(items[index])}");
 		}
 		while (true)
 		{
-			Console.Write($"Select {source} by number (1-{items.Count}), or enter {hotkeys.Quit} to quit: ");
+			Console.Write($"Select {source} by number (0-{items.Count}), or enter {hotkeys.Quit} to quit: ");
 			var input = await ConsoleInput.ReadLineAsync(cancellationToken);
 			if (input == null || input.Trim().Equals(hotkeys.Quit.ToString(), StringComparison.OrdinalIgnoreCase))
 			{
-				return null;
+				return (true, null);
 			}
-			if (int.TryParse(input, out var number) && number >= 1 && number <= items.Count)
+			if (int.TryParse(input, out var number) && number >= 0 && number <= items.Count)
 			{
-				return items[number - 1];
+				return (false, number == 0 ? null : items[number - 1]);
 			}
-			Console.WriteLine($"Invalid selection. Enter a number from 1 to {items.Count}.");
+			Console.WriteLine($"Invalid selection. Enter a number from 0 to {items.Count}.");
 		}
 	}
 

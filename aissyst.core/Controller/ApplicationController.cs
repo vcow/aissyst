@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using aissyst.core.Audio;
+using aissyst.core.LLMConnector;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.Logging;
@@ -16,6 +17,7 @@ public class ApplicationController : IAsyncDisposable
 	private readonly ITextProcessor _textProcessor;
 	private readonly ICaptureSession _captureSession;
 	private readonly ILogger<ApplicationController> _logger;
+	private readonly ILLMConnector _llmConnector;
 	private readonly IApplicationSettings _settings;
 
 	private readonly CompositeDisposable _disposables = new();
@@ -39,12 +41,13 @@ public class ApplicationController : IAsyncDisposable
 	private Task? _disposeTask;
 
 	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor, ICaptureSession captureSession,
-		ILogger<ApplicationController> logger, IApplicationSettings settings)
+		ILogger<ApplicationController> logger, ILLMConnector llmConnector, IApplicationSettings settings)
 	{
 		_transcriber = transcriber;
 		_textProcessor = textProcessor;
 		_captureSession = captureSession;
 		_logger = logger;
+		_llmConnector = llmConnector;
 		_settings = settings;
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
@@ -118,6 +121,7 @@ public class ApplicationController : IAsyncDisposable
 		}
 
 		using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+		await RunTrackedAsync(() => _llmConnector.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _transcriber.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _textProcessor.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));

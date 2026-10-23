@@ -95,7 +95,7 @@ public class ApplicationControllerTests
 
 	private static ApplicationController Create(TestCaptureSession source, TestTranscriber transcriber,
 		TestTextProcessor processor, ApplicationSettings? settings = null) =>
-		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, settings ?? new ApplicationSettings());
+		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, new TestLLMConnector(), settings ?? new ApplicationSettings());
 
 	private static IReadOnlyList<AudioFrame> Frames(float value) =>
 		[new(new float[] { value }, new AudioFormat(16000, 1), TimeSpan.Zero)];

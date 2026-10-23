@@ -2,8 +2,10 @@
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.LLMConnector;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
+using chatgpt_connector;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -41,9 +43,13 @@ builder.Services.AddSingleton(new ConsoleHotkeySettings(
 builder.Services.AddSingleton<ConsoleCaptureSession>();
 builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 builder.Services.AddSingleton<ITextProcessor, LoggingTextProcessor>();
+builder.Services.AddSingleton(new ChatGPTConnectorOptions());
+builder.Services.AddSingleton<IChatGPTAuthorization, LoopbackChatGPTAuthorization>();
+builder.Services.AddSingleton<ILLMConnector, ChatGPTConnector>();
 builder.Services.AddSingleton<ApplicationController>();
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
+
 builder.Services.AddHostedService<MainThreadWorker>();
 using var host = builder.Build();
 

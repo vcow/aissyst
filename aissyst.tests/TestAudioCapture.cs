@@ -13,6 +13,8 @@ internal sealed class TestAudioCapture : IAudioCapture
 	internal int MicrophoneCaptures { get; private set; }
 	internal int ApplicationCaptures { get; private set; }
 	internal Action? EnumeratingSources { get; set; }
+	internal IReadOnlyList<AudioInputDevice> InputDevices { get; set; } = [new("test-microphone", "Test microphone", 1, true)];
+	internal IReadOnlyList<AudioApplication> Applications { get; set; } = [new(123, "Test application", true, [123])];
 
 	internal Task EmitMicrophoneAsync(AudioFrame frame) => EmitAsync(_microphone, frame);
 	internal Task EmitApplicationAsync(AudioFrame frame) => EmitAsync(_application, frame);
@@ -21,14 +23,14 @@ internal sealed class TestAudioCapture : IAudioCapture
 	{
 		EnumeratingSources?.Invoke();
 		MicrophoneEnumerations++;
-		return Task.FromResult<IReadOnlyList<AudioInputDevice>>([new("test-microphone", "Test microphone", 1, true)]);
+		return Task.FromResult(InputDevices);
 	}
 
 	public Task<IReadOnlyList<AudioApplication>> GetApplicationsAsync(CancellationToken cancellationToken = default)
 	{
 		EnumeratingSources?.Invoke();
 		ApplicationEnumerations++;
-		return Task.FromResult<IReadOnlyList<AudioApplication>>([new(123, "Test application", true, [123])]);
+		return Task.FromResult(Applications);
 	}
 
 	public IAsyncEnumerable<AudioFrame> CaptureMicrophoneAsync(string deviceId, CancellationToken cancellationToken = default)

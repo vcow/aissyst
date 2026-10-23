@@ -46,10 +46,11 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			throw new InvalidOperationException("At least one supported audio source must be enabled.");
 		}
-		if (sources.HasFlag(AudioSourceType.Microphone) != (Context.Microphone != null)
-			|| sources.HasFlag(AudioSourceType.Application) != (Context.Application != null))
+		var selectedSources = (Context.Microphone != null ? AudioSourceType.Microphone : AudioSourceType.None)
+			| (Context.Application != null ? AudioSourceType.Application : AudioSourceType.None);
+		if (selectedSources == AudioSourceType.None || (selectedSources & ~sources) != AudioSourceType.None)
 		{
-			throw new InvalidOperationException("The selected audio sources do not match the enabled audio sources.");
+			throw new InvalidOperationException("Select at least one of the enabled audio sources.");
 		}
 		_started = true;
 		_clock.Start();

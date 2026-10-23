@@ -4,6 +4,7 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.LLMConnector;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
@@ -43,6 +44,70 @@ public class AvailableSourcesTests
 			Assert.Contains("No audio sources are enabled", output);
 			Assert.DoesNotContain("start a session", output);
 		}
+	}
+
+	[Fact]
+	public async Task ChoosingNoneForBothSourcesExitsWithoutStartingSession()
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Both));
+		var output = await RunWorkflowAsync(host, "0\n0\n");
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		var selection = host.Services.GetRequiredService<ConsoleCaptureSession>();
+		Assert.Equal(1, capture.MicrophoneEnumerations);
+		Assert.Equal(1, capture.ApplicationEnumerations);
+		Assert.Equal(0, capture.MicrophoneCaptures);
+		Assert.Equal(0, capture.ApplicationCaptures);
+		Assert.False(selection.HasSelectedSources);
+		Assert.Contains("0. None", output);
+		Assert.Contains("No audio sources selected", output);
+		Assert.DoesNotContain("Press Enter to start a session", output);
+	}
+
+	[Theory]
+	[InlineData("0\n1\n\ns\nq\n", 0, 1)]
+	[InlineData("1\n0\n\ns\nq\n", 1, 0)]
+	public async Task ChoosingNoneDisablesOnlyThatSource(string input, int microphones, int applications)
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Both));
+		var output = await RunWorkflowAsync(host, input);
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		Assert.Equal(microphones, capture.MicrophoneCaptures);
+		Assert.Equal(applications, capture.ApplicationCaptures);
+		Assert.Contains("Session started", output);
+		Assert.DoesNotContain("No audio sources selected", output);
+	}
+
+	[Theory]
+	[InlineData(AudioSourceType.Microphone)]
+	[InlineData(AudioSourceType.Application)]
+	public async Task ChoosingNoneForTheOnlyEnabledSourceExits(AudioSourceType sources)
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: sources));
+		var output = await RunWorkflowAsync(host, "0\n");
+		Assert.Contains("No audio sources selected", output);
+		Assert.DoesNotContain("Session started", output);
+	}
+
+	[Fact]
+	public async Task EmptyMicrophoneListStillAllowsChoosingApplication()
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Both));
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		capture.InputDevices = [];
+		var output = await RunWorkflowAsync(host, "0\n1\n\ns\nq\n");
+		Assert.Contains("No available microphones found", output);
+		Assert.Contains("0. None", output);
+		Assert.Equal(0, capture.MicrophoneCaptures);
+		Assert.Equal(1, capture.ApplicationCaptures);
+	}
+
+	[Fact]
+	public async Task QuitDuringSourceSelectionDoesNotContinueToNextSource()
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Both));
+		var output = await RunWorkflowAsync(host, "q\n");
+		Assert.Equal(0, host.Services.GetRequiredService<TestAudioCapture>().ApplicationEnumerations);
+		Assert.DoesNotContain("Session started", output);
 	}
 
 	[Fact]
@@ -231,6 +296,7 @@ public class AvailableSourcesTests
 		builder.Services.AddSingleton<TestTranscriber>();
 		builder.Services.AddSingleton<ITranscriber>(provider => provider.GetRequiredService<TestTranscriber>());
 		builder.Services.AddSingleton<ITextProcessor, TestTextProcessor>();
+		builder.Services.AddSingleton<ILLMConnector, TestLLMConnector>();
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 		builder.Services.AddSingleton<ApplicationController>();
