@@ -1,6 +1,8 @@
 ﻿using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Controller;
+using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -24,13 +26,22 @@ else
 
 IApplicationSettings settings = new ApplicationSettings(
 	pauseUntilRecordingStops: TimeSpan.FromSeconds(1),
-	availableSources: AudioSourceType.Application);
+	availableSources: AudioSourceType.Both,
+	maxTranscriptionProcessingCount: 1,
+	maxTextProcessingCount: 1);
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });
 builder.Services.AddSingleton<ITranscriber, WhisperTranscriber>();
-builder.Services.AddSingleton<TranscriptionQueue>();
-builder.Services.AddSingleton(new ConsoleHotkeySettings());
+builder.Services.AddSingleton(new ConsoleHotkeySettings(
+	finishRecording: ' ',
+	stopSession: 'S',
+	clearQueue: 'C',
+	quit: 'Q'));
+builder.Services.AddSingleton<ConsoleCaptureSession>();
+builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
+builder.Services.AddSingleton<ITextProcessor, LoggingTextProcessor>();
+builder.Services.AddSingleton<ApplicationController>();
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();
 builder.Services.AddHostedService<MainThreadWorker>();

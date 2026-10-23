@@ -1,16 +1,17 @@
 using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
-using aissyst.core.Transcription;
+using R3;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace aissyst.tests;
 
-public class CaptureSessionTests : IDisposable
+public class CaptureSessionTests
 {
-	private readonly string _outputDirectory = Path.Combine(Path.GetTempPath(), $"aissyst-recording-tests-{Guid.NewGuid():N}");
+	private readonly ConcurrentQueue<(AudioSourceType Source, IReadOnlyList<AudioFrame> Frames)> _records = new();
 	private static readonly AudioInputDevice Microphone = new("test-microphone", "Test microphone", 1, true);
 	private static readonly AudioApplication Application = new(123, "Test application", false, new[] { 123 });
 
@@ -114,31 +115,27 @@ public class CaptureSessionTests : IDisposable
 		await capture.EmitMicrophoneAsync(Frame(0));
 		await capture.EmitApplicationAsync(Frame(0.001f));
 		await session.CompleteRecordingsAsync();
-		Assert.Empty(Directory.GetFiles(_outputDirectory, "*.wav"));
+		Assert.Empty(_records);
 
 		await capture.EmitMicrophoneAsync(Frame(0.5f));
 		await capture.EmitApplicationAsync(Frame(-0.5f));
 		await session.CompleteRecordingsAsync();
-		Assert.Single(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
-		Assert.Single(Directory.GetFiles(_outputDirectory, "application-*.wav"));
+		Assert.Single(_records, record => record.Source == AudioSourceType.Microphone);
+		Assert.Single(_records, record => record.Source == AudioSourceType.Application);
 		Assert.False(session.Completion.IsCompleted);
 
 		await session.CompleteRecordingsAsync();
-		Assert.Equal(2, Directory.GetFiles(_outputDirectory, "*.wav").Length);
+		Assert.Equal(2, _records.Count);
 		await capture.EmitMicrophoneAsync(Frame(0.25f));
 		await session.CompleteRecordingsAsync();
-		Assert.Equal(2, Directory.GetFiles(_outputDirectory, "microphone-*.wav").Length);
-		var queue = host.Services.GetRequiredService<TranscriptionQueue>();
-		Assert.Equal(3, queue.Count);
-		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-		var first = await queue.DequeueAsync(timeout.Token);
-		var second = await queue.DequeueAsync(timeout.Token);
-		Assert.Equal(AudioSourceType.Microphone, first.Source);
-		Assert.Equal(AudioSourceType.Application, second.Source);
-		Assert.Equal(first.SessionId, second.SessionId);
-		Assert.NotEqual(first.Id, second.Id);
-		Assert.Equal(new AudioFormat(16000, 1), first.Recording.Format);
-		Assert.All(first.Recording.Samples.ToArray(), sample => Assert.Equal(0.5f, sample));
+		Assert.Equal(2, _records.Count(record => record.Source == AudioSourceType.Microphone));
+		Assert.Equal(3, _records.Count);
+		var completed = _records.ToArray();
+		Assert.Equal(AudioSourceType.Microphone, completed[0].Source);
+		Assert.Equal(AudioSourceType.Application, completed[1].Source);
+		var first = Assert.Single(completed[0].Frames);
+		Assert.Equal(new AudioFormat(16000, 1), first.Format);
+		Assert.All(first.Samples.ToArray(), sample => Assert.Equal(0.5f, sample));
 	}
 
 	[Fact]
@@ -151,11 +148,11 @@ public class CaptureSessionTests : IDisposable
 		session.Start();
 		await host.Services.GetRequiredService<TestAudioCapture>().EmitApplicationAsync(Frame(0.5f));
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-		while (Directory.GetFiles(_outputDirectory, "application-*.wav").Length == 0)
+		while (_records.IsEmpty)
 		{
 			await Task.Delay(20, timeout.Token);
 		}
-		Assert.Empty(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
+		Assert.DoesNotContain(_records, record => record.Source == AudioSourceType.Microphone);
 		Assert.False(session.Completion.IsCompleted);
 	}
 
@@ -170,10 +167,9 @@ public class CaptureSessionTests : IDisposable
 			session.Start();
 			await host.Services.GetRequiredService<TestAudioCapture>().EmitMicrophoneAsync(Frame(0.5f));
 		}
-		var path = Assert.Single(Directory.GetFiles(_outputDirectory, "microphone-*.wav"));
-		var bytes = await File.ReadAllBytesAsync(path);
-		Assert.Equal(44 + 320 * sizeof(short), bytes.Length);
-		Assert.Empty(Directory.GetFiles(_outputDirectory, "*.tmp"));
+		var record = Assert.Single(_records);
+		Assert.Equal(AudioSourceType.Microphone, record.Source);
+		Assert.Equal(320, Assert.Single(record.Frames).Samples.Length);
 	}
 
 	private static AudioFrame Frame(float value)
@@ -186,24 +182,16 @@ public class CaptureSessionTests : IDisposable
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		builder.Services.AddScoped<CaptureSessionContext>();
-		builder.Services.AddScoped(provider => new CaptureSession(
-			provider.GetRequiredService<CaptureSessionContext>(),
-			provider.GetRequiredService<IHostApplicationLifetime>(),
-			provider.GetRequiredService<IAudioCapture>(),
-			provider.GetRequiredService<IApplicationSettings>(),
-			provider.GetRequiredService<TranscriptionQueue>(), _outputDirectory));
+		builder.Services.AddScoped<CaptureSession>();
 		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1)));
-		builder.Services.AddSingleton<TranscriptionQueue>();
+		builder.Services.AddSingleton(new ConsoleHotkeySettings());
+		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<TestAudioCapture>();
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
-		return builder.Build();
-	}
-
-	public void Dispose()
-	{
-		if (Directory.Exists(_outputDirectory))
-		{
-			Directory.Delete(_outputDirectory, recursive: true);
-		}
+		var host = builder.Build();
+		var records = host.Services.GetRequiredService<ConsoleCaptureSession>();
+		records.MicrophoneRecordObservable.Subscribe(frames => _records.Enqueue((AudioSourceType.Microphone, frames)));
+		records.ApplicationRecordingObservable.Subscribe(frames => _records.Enqueue((AudioSourceType.Application, frames)));
+		return host;
 	}
 }

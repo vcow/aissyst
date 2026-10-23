@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using aissyst.core;
 using aissyst.core.Audio;
-using aissyst.core.Transcription;
 using Microsoft.Extensions.Hosting;
 
 namespace aissyst.console;
@@ -12,32 +11,22 @@ public sealed class CaptureSession : IAsyncDisposable
 	private readonly CancellationTokenSource _cancellation;
 	private readonly IAudioCapture _audioCapture;
 	private readonly IApplicationSettings _settings;
-	private readonly TranscriptionQueue _transcriptionQueue;
+	private readonly ConsoleCaptureSession _records;
 	private readonly Stopwatch _clock = new();
 
 	private readonly Channel<SessionEvent> _events = Channel.CreateBounded<SessionEvent>(
 		new BoundedChannelOptions(256) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
 
-	private readonly string _sessionId = $"{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}";
-	private int _recordingNumber;
 	private bool _started;
 	private Task? _disposeTask;
-	private readonly string _recordingDirectory;
 
 	public CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, IApplicationSettings settings, TranscriptionQueue transcriptionQueue)
-		: this(context, applicationLifetime, audioCapture, settings, transcriptionQueue, Path.GetFullPath("recordings"))
-	{
-	}
-
-	internal CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, IApplicationSettings settings, TranscriptionQueue transcriptionQueue, string recordingDirectory)
+		IAudioCapture audioCapture, IApplicationSettings settings, ConsoleCaptureSession records)
 	{
 		Context = context;
 		_audioCapture = audioCapture;
 		_settings = settings;
-		_transcriptionQueue = transcriptionQueue;
-		_recordingDirectory = recordingDirectory;
+		_records = records;
 		_cancellation = CancellationTokenSource.CreateLinkedTokenSource(applicationLifetime.ApplicationStopping);
 	}
 
@@ -62,7 +51,6 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			throw new InvalidOperationException("The selected audio sources do not match the enabled audio sources.");
 		}
-		Directory.CreateDirectory(_recordingDirectory);
 		_started = true;
 		_clock.Start();
 		Completion = RunAsync(_cancellation.Token);
@@ -197,11 +185,11 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			case EventKind.Frame:
 				var recorder = item.Source == AudioSourceType.Microphone ? microphone : application;
-				await SaveIfPresentAsync(recorder.Append(item.Frame!, item.At), item.Source);
+				await PublishIfPresentAsync(recorder.Append(item.Frame!, item.At), item.Source);
 				break;
 			case EventKind.Tick:
-				await SaveIfPresentAsync(microphone.CompleteIfSilent(item.At), AudioSourceType.Microphone);
-				await SaveIfPresentAsync(application.CompleteIfSilent(item.At), AudioSourceType.Application);
+				await PublishIfPresentAsync(microphone.CompleteIfSilent(item.At), AudioSourceType.Microphone);
+				await PublishIfPresentAsync(application.CompleteIfSilent(item.At), AudioSourceType.Application);
 				break;
 			case EventKind.Complete:
 				try
@@ -223,39 +211,18 @@ public sealed class CaptureSession : IAsyncDisposable
 
 	private async Task CompleteAsync(AudioRecorder microphone, AudioRecorder application)
 	{
-		await SaveIfPresentAsync(microphone.Complete(), AudioSourceType.Microphone);
-		await SaveIfPresentAsync(application.Complete(), AudioSourceType.Application);
+		await PublishIfPresentAsync(microphone.Complete(), AudioSourceType.Microphone);
+		await PublishIfPresentAsync(application.Complete(), AudioSourceType.Application);
 	}
 
-	private Task SaveIfPresentAsync(AudioRecording? recording, AudioSourceType source)
+	private Task PublishIfPresentAsync(AudioRecording? recording, AudioSourceType source)
 	{
 		if (recording == null)
 		{
 			return Task.CompletedTask;
 		}
-		_transcriptionQueue.Enqueue(new TranscriptionRequest(Guid.NewGuid(), _sessionId, source,
-			DateTimeOffset.UtcNow, recording));
-
-		return source == AudioSourceType.Microphone
-			? OnMicrophoneRecordComplete(recording)
-			: OnApplicationRecordComplete(recording);
-	}
-
-	private Task OnMicrophoneRecordComplete(AudioRecording recording)
-	{
-		return SaveRecordingAsync("microphone", recording);
-	}
-
-	private Task OnApplicationRecordComplete(AudioRecording recording)
-	{
-		return SaveRecordingAsync("application", recording);
-	}
-
-	private async Task SaveRecordingAsync(string source, AudioRecording recording)
-	{
-		var path = Path.Combine(_recordingDirectory, $"{source}-{_sessionId}-{++_recordingNumber:D4}.wav");
-		await WaveFile.WriteAsync(path, recording);
-		Console.WriteLine($"Saved {source} recording: {path}");
+		_records.Publish(source, recording);
+		return Task.CompletedTask;
 	}
 
 	private async Task StopAndDisposeAsync()

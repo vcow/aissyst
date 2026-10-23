@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using aissyst.core.Audio;
 using Microsoft.Extensions.Logging;
 using Whisper.net;
@@ -33,7 +34,7 @@ public sealed class WhisperTranscriber(
 			await Task.Run(() =>
 			{
 				_factory = WhisperFactory.FromPath(path, new WhisperFactoryOptions { UseGpu = false });
-				_processor = _factory.CreateBuilder().WithLanguage(settings.TranscriptionLanguage).Build();
+				_processor = CreateProcessor();
 			}, cancellationToken);
 			cancellationToken.ThrowIfCancellationRequested();
 			_isReady = true;
@@ -55,10 +56,48 @@ public sealed class WhisperTranscriber(
 		}
 	}
 
-	public Task<string> TranscribeAsync(IReadOnlyList<AudioFrame> frames, CancellationToken cancellationToken = default)
+	public async Task<string> TranscribeAsync(IReadOnlyList<AudioFrame> frames, CancellationToken cancellationToken = default)
 	{
-		throw new NotImplementedException();
+		await _lifecycle.WaitAsync(cancellationToken);
+		try
+		{
+			ObjectDisposedException.ThrowIf(_disposed, this);
+			if (!_isReady || _processor == null)
+			{
+				throw new InvalidOperationException("The transcriber has not been initialized.");
+			}
+			var samples = await Task.Run(() => WhisperAudioConverter.Convert(frames, cancellationToken), cancellationToken);
+			if (samples.Length == 0)
+			{
+				return string.Empty;
+			}
+			var text = new StringBuilder();
+			try
+			{
+				await foreach (var segment in _processor.ProcessAsync(samples.AsMemory(), cancellationToken))
+				{
+					text.Append(segment.Text);
+				}
+			}
+			catch
+			{
+				// ProcessAsync may observe cancellation before the native inference task exits.
+				await _processor.DisposeAsync();
+				_processor = CreateProcessor();
+				throw;
+			}
+			return text.ToString().Trim();
+		}
+		finally
+		{
+			_lifecycle.Release();
+		}
 	}
+
+	private WhisperProcessor CreateProcessor() => _factory!.CreateBuilder()
+		.WithLanguage(settings.TranscriptionLanguage)
+		.WithNoContext()
+		.Build();
 
 	internal async Task<string> EnsureModelAsync(CancellationToken cancellationToken)
 	{

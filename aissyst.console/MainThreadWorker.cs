@@ -1,6 +1,6 @@
 using aissyst.core;
 using aissyst.core.Audio;
-using aissyst.core.Transcription;
+using aissyst.core.Controller;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -8,24 +8,22 @@ namespace aissyst.console;
 
 public class MainThreadWorker : BackgroundService
 {
-	private readonly IAudioCapture _audioCapture;
+	private readonly ConsoleCaptureSession _captureSession;
 	private readonly IServiceScopeFactory _scopeFactory;
 	private readonly IHostApplicationLifetime _applicationLifetime;
 	private readonly IApplicationSettings _settings;
-	private readonly ITranscriber _transcriber;
-	private readonly TranscriptionQueue _transcriptionQueue;
+	private readonly ApplicationController _controller;
 	private readonly ConsoleHotkeySettings _hotkeys;
 
-	public MainThreadWorker(IAudioCapture audioCapture, IServiceScopeFactory scopeFactory,
-		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ITranscriber transcriber,
-		TranscriptionQueue transcriptionQueue, ConsoleHotkeySettings hotkeys)
+	public MainThreadWorker(ConsoleCaptureSession captureSession, IServiceScopeFactory scopeFactory,
+		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ApplicationController controller,
+		ConsoleHotkeySettings hotkeys)
 	{
-		_audioCapture = audioCapture;
+		_captureSession = captureSession;
 		_scopeFactory = scopeFactory;
 		_applicationLifetime = applicationLifetime;
 		_settings = settings;
-		_transcriber = transcriber;
-		_transcriptionQueue = transcriptionQueue;
+		_controller = controller;
 		_hotkeys = hotkeys;
 	}
 
@@ -44,41 +42,15 @@ public class MainThreadWorker : BackgroundService
 				throw new InvalidOperationException("The configured audio sources are not supported.");
 			}
 
-			await _transcriber.InitializeAsync(stoppingToken);
-
-			AudioInputDevice? microphone = null;
-			AudioApplication? application = null;
-			if (sources.HasFlag(AudioSourceType.Microphone))
+			WriteHotkeyHelp();
+			await _controller.InitializeAsync(stoppingToken);
+			if (!_captureSession.HasSelectedSources)
 			{
-				var devices = await _audioCapture.GetInputDevicesAsync(stoppingToken);
-				microphone = await SelectAsync(devices, device => device.Name, "microphone", stoppingToken);
-				if (microphone == null)
-				{
-					return;
-				}
-			}
-			if (sources.HasFlag(AudioSourceType.Application))
-			{
-				var applications = await _audioCapture.GetApplicationsAsync(stoppingToken);
-				application = await SelectAsync(applications, app => app.Name, "application", stoppingToken);
-				if (application == null)
-				{
-					return;
-				}
-			}
-
-			Console.WriteLine();
-			if (microphone != null)
-			{
-				Console.WriteLine($"Selected microphone: {microphone.Name}");
-			}
-			if (application != null)
-			{
-				Console.WriteLine($"Selected application: {application.Name}");
+				return;
 			}
 			while (!stoppingToken.IsCancellationRequested)
 			{
-				Console.Write($"Press Enter to start a session, enter {_hotkeys.ClearQueue} to clear the transcription queue, or {_hotkeys.Quit} to quit: ");
+				Console.Write($"Press Enter to start a session, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit: ");
 				var command = await ConsoleInput.ReadLineAsync(stoppingToken);
 				if (command == null || Matches(command, _hotkeys.Quit))
 				{
@@ -86,17 +58,17 @@ public class MainThreadWorker : BackgroundService
 				}
 				if (Matches(command, _hotkeys.ClearQueue))
 				{
-					ClearTranscriptionQueue();
+					await ClearQueuesAsync(stoppingToken);
 					continue;
 				}
 
 				if (!string.IsNullOrWhiteSpace(command))
 				{
-					Console.WriteLine($"Unknown command. Press Enter to start, enter {_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit.");
+					Console.WriteLine($"Unknown command. Press Enter to start, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit.");
 					continue;
 				}
 
-				if (await RunSessionAsync(microphone, application, stoppingToken))
+				if (await RunSessionAsync(_captureSession.SelectedMicrophone, _captureSession.SelectedApplication, stoppingToken))
 				{
 					return;
 				}
@@ -114,45 +86,14 @@ public class MainThreadWorker : BackgroundService
 		}
 		finally
 		{
-			_applicationLifetime.StopApplication();
-		}
-	}
-
-	private async Task<T?> SelectAsync<T>(IReadOnlyList<T> items, Func<T, string> getName, string sourceName,
-		CancellationToken cancellationToken) where T : class
-	{
-		Console.WriteLine();
-		if (items.Count == 0)
-		{
-			Console.WriteLine($"No available {sourceName}s found.");
-			return null;
-		}
-
-		Console.WriteLine($"Available {sourceName}s:");
-		for (var index = 0; index < items.Count; index++)
-		{
-			Console.WriteLine($"{index + 1}. {getName(items[index])}");
-		}
-
-		while (true)
-		{
-			Console.Write($"Select {sourceName} by number (1-{items.Count}), enter {_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit: ");
-			var input = await ConsoleInput.ReadLineAsync(cancellationToken);
-			if (input == null || Matches(input, _hotkeys.Quit))
+			try
 			{
-				return null;
+				await _controller.DisposeAsync();
 			}
-			if (Matches(input, _hotkeys.ClearQueue))
+			finally
 			{
-				ClearTranscriptionQueue();
-				continue;
+				_applicationLifetime.StopApplication();
 			}
-			if (int.TryParse(input, out var number) && number >= 1 && number <= items.Count)
-			{
-				return items[number - 1];
-			}
-
-			Console.WriteLine($"Invalid selection. Enter a number from 1 to {items.Count}.");
 		}
 	}
 
@@ -170,8 +111,8 @@ public class MainThreadWorker : BackgroundService
 			sessionStarted = true;
 
 			Console.WriteLine("Session started. Waiting for audio.");
-			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {_hotkeys.FinishRecording} to finish active recordings, "
-				+ $"{_hotkeys.StopSession} to stop listening, {_hotkeys.ClearQueue} to clear the transcription queue, or {_hotkeys.Quit} to quit."
+			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {KeyName(_hotkeys.FinishRecording)} to send the current fragments and keep listening, "
+				+ $"{_hotkeys.StopSession} to stop listening, {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit."
 				+ (Console.IsInputRedirected ? " Then press Enter." : " Ctrl+C also quits."));
 			using var inputCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 			try
@@ -184,7 +125,7 @@ public class MainThreadWorker : BackgroundService
 						await session.Completion;
 						return true;
 					}
-					var command = (await input)?.Trim();
+					var command = await input;
 					if (command == null || Matches(command, _hotkeys.Quit))
 					{
 						return true;
@@ -195,7 +136,7 @@ public class MainThreadWorker : BackgroundService
 					}
 					if (Matches(command, _hotkeys.ClearQueue))
 					{
-						ClearTranscriptionQueue();
+						await ClearQueuesAsync(stoppingToken);
 						continue;
 					}
 					if (Matches(command, _hotkeys.FinishRecording))
@@ -204,8 +145,8 @@ public class MainThreadWorker : BackgroundService
 						continue;
 					}
 
-					Console.WriteLine($"Unknown command. Use {_hotkeys.FinishRecording} to finish recordings, {_hotkeys.StopSession} to stop listening, "
-						+ $"{_hotkeys.ClearQueue} to clear the queue, or {_hotkeys.Quit} to quit.");
+					Console.WriteLine($"Unknown command. Use {KeyName(_hotkeys.FinishRecording)} to send the current fragments, {_hotkeys.StopSession} to stop listening, "
+						+ $"{_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit.");
 				}
 			}
 			finally
@@ -222,14 +163,37 @@ public class MainThreadWorker : BackgroundService
 		}
 	}
 
-	private void ClearTranscriptionQueue()
+	private void WriteHotkeyHelp()
 	{
-		var removed = _transcriptionQueue.Clear();
-		Console.WriteLine($"Transcription queue cleared. Removed {removed} pending recording(s).");
+		Console.WriteLine("Hotkeys:");
+		Console.WriteLine("  Enter - start a session when not listening.");
+		Console.WriteLine($"  {KeyName(_hotkeys.FinishRecording)} - send current audio fragments for transcription and keep listening.");
+		Console.WriteLine($"  {_hotkeys.StopSession} - stop listening.");
+		Console.WriteLine($"  {_hotkeys.ClearQueue} - clear pending audio and text.");
+		Console.WriteLine($"  {_hotkeys.Quit} / Ctrl+C - quit.");
+		if (Console.IsInputRedirected)
+		{
+			Console.WriteLine("Line input: press Enter after each command.");
+			if (_hotkeys.FinishRecording == ' ')
+			{
+				Console.WriteLine("For Space, enter a single space followed by Enter.");
+			}
+		}
+		Console.WriteLine();
+	}
+
+	private async Task ClearQueuesAsync(CancellationToken cancellationToken)
+	{
+		var (records, transcriptions) = await _controller.ClearQueues(cancellationToken);
+		Console.WriteLine($"Queues cleared. Removed {records} pending audio recording(s) and {transcriptions} pending transcription(s).");
 	}
 
 	private static bool Matches(string input, char hotkey)
 	{
-		return input.Trim().Equals(hotkey.ToString(), StringComparison.OrdinalIgnoreCase);
+		return hotkey == ' '
+			? input == " "
+			: input.Trim().Equals(hotkey.ToString(), StringComparison.OrdinalIgnoreCase);
 	}
+
+	private static string KeyName(char hotkey) => hotkey == ' ' ? "Space" : hotkey.ToString();
 }

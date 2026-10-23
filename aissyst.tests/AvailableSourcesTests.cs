@@ -1,11 +1,15 @@
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
+using aissyst.core.Controller;
+using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
+using R3;
 
 namespace aissyst.tests;
 
@@ -23,41 +27,41 @@ public class AvailableSourcesTests
 	public async Task StartupRequestsOnlyEnabledSources(AudioSourceType sources, string input,
 		int microphoneSelections, int applicationSelections)
 	{
-		var previousInput = Console.In;
-		var previousOutput = Console.Out;
-		using var output = new StringWriter();
-		using var reader = new StringReader(input);
-		using var host = CreateHost();
-		var capture = new TestAudioCapture();
-		var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
-		await using var transcriber = new TestTranscriber();
-		using var worker = new MainThreadWorker(capture, host.Services.GetRequiredService<IServiceScopeFactory>(),
-			lifetime, new ApplicationSettings(availableSources: sources), transcriber,
-			host.Services.GetRequiredService<TranscriptionQueue>(), new ConsoleHotkeySettings());
-		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var host = CreateHost(new ApplicationSettings(availableSources: sources));
+		var transcriber = host.Services.GetRequiredService<TestTranscriber>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		capture.EnumeratingSources = () => Assert.True(transcriber.IsReady);
+		var output = await RunWorkflowAsync(host, input);
+		Assert.Equal(microphoneSelections, capture.MicrophoneEnumerations);
+		Assert.Equal(applicationSelections, capture.ApplicationEnumerations);
+		Assert.Equal(microphoneSelections != 0, output.Contains("Select microphone by number"));
+		Assert.Equal(applicationSelections != 0, output.Contains("Select application by number"));
+		Assert.True(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested);
+		Assert.Equal(sources == AudioSourceType.None ? 0 : 1, transcriber.Initializations);
+		if (sources == AudioSourceType.None)
+		{
+			Assert.Contains("No audio sources are enabled", output);
+			Assert.DoesNotContain("start a session", output);
+		}
+	}
+
+	[Fact]
+	public async Task InitializationFailureStopsBeforeSourceSelection()
+	{
+		using var host = CreateHost(new ApplicationSettings());
+		host.Services.GetRequiredService<TestTranscriber>().InitializationError = new InvalidOperationException("Model load failed.");
+		var previousExitCode = Environment.ExitCode;
 		try
 		{
-			Console.SetIn(reader);
-			Console.SetOut(output);
-			await worker.StartAsync(timeout.Token);
-			await worker.ExecuteTask!.WaitAsync(timeout.Token);
+			await RunWorkflowAsync(host, "");
+			Assert.Equal(1, Environment.ExitCode);
+			var capture = host.Services.GetRequiredService<TestAudioCapture>();
+			Assert.Equal(0, capture.MicrophoneEnumerations);
+			Assert.Equal(0, capture.ApplicationEnumerations);
 		}
 		finally
 		{
-			Console.SetIn(previousInput);
-			Console.SetOut(previousOutput);
-		}
-
-		Assert.Equal(microphoneSelections, capture.MicrophoneEnumerations);
-		Assert.Equal(applicationSelections, capture.ApplicationEnumerations);
-		Assert.Equal(microphoneSelections != 0, output.ToString().Contains("Select microphone by number"));
-		Assert.Equal(applicationSelections != 0, output.ToString().Contains("Select application by number"));
-		Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
-		Assert.Equal(sources != AudioSourceType.None, transcriber.IsReady);
-		if (sources == AudioSourceType.None)
-		{
-			Assert.Contains("No audio sources are enabled", output.ToString());
-			Assert.DoesNotContain("start a session", output.ToString());
+			Environment.ExitCode = previousExitCode;
 		}
 	}
 
@@ -67,83 +71,121 @@ public class AvailableSourcesTests
 	[InlineData(AudioSourceType.Both, 1, 1)]
 	public async Task SessionOpensOnlyEnabledSources(AudioSourceType sources, int microphones, int applications)
 	{
-		using var host = CreateHost();
-		var context = new CaptureSessionContext();
-		context.Initialize(microphones == 1 ? new AudioInputDevice("mic", "Microphone", 1, true) : null,
+		using var host = CreateHost(new ApplicationSettings(availableSources: sources));
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(
+			microphones == 1 ? new AudioInputDevice("mic", "Microphone", 1, true) : null,
 			applications == 1 ? new AudioApplication(123, "Application", true, [123]) : null);
-		var capture = new TestAudioCapture();
-		var directory = Path.Combine(Path.GetTempPath(), $"aissyst-source-tests-{Guid.NewGuid():N}");
-		try
-		{
-			await using var session = new CaptureSession(context,
-				host.Services.GetRequiredService<IHostApplicationLifetime>(), capture,
-				new ApplicationSettings(availableSources: sources), host.Services.GetRequiredService<TranscriptionQueue>(), directory);
-			session.Start();
-			await session.CompleteRecordingsAsync().WaitAsync(TimeSpan.FromSeconds(5));
-			Assert.Equal(microphones, capture.MicrophoneCaptures);
-			Assert.Equal(applications, capture.ApplicationCaptures);
-			Assert.False(session.Completion.IsCompleted);
-		}
-		finally
-		{
-			if (Directory.Exists(directory))
-			{
-				Directory.Delete(directory, recursive: true);
-			}
-		}
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		session.Start();
+		await session.CompleteRecordingsAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		Assert.Equal(microphones, capture.MicrophoneCaptures);
+		Assert.Equal(applications, capture.ApplicationCaptures);
+		Assert.False(session.Completion.IsCompleted);
 	}
 
 	[Fact]
-	public async Task CustomClearHotkeyWorksDuringSessionAndWhileWaitingForRestart()
+	public async Task CustomHotkeysClearBothQueuesAndRestartCaptureWithoutReinitializingModel()
 	{
-		var directory = Path.Combine(Path.GetTempPath(), $"aissyst-hotkey-tests-{Guid.NewGuid():N}");
-		var settings = new ApplicationSettings(availableSources: AudioSourceType.Microphone);
-		var queue = new TranscriptionQueue(settings, NullLogger<TranscriptionQueue>.Instance);
-		for (var index = 0; index < 2; index++)
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone),
+			new ConsoleHotkeySettings(finishRecording: 'F', stopSession: 'T', clearQueue: 'X', quit: 'Z'));
+		var output = await RunWorkflowAsync(host, "1\n\nx\nt\nx\n\nt\nz\n");
+		Assert.Equal(2, host.Services.GetRequiredService<TestAudioCapture>().MicrophoneCaptures);
+		Assert.Equal(1, host.Services.GetRequiredService<TestTranscriber>().Initializations);
+		Assert.Contains("Removed 0 pending audio recording(s) and 0 pending transcription(s)", output);
+		Assert.Contains("F to send the current fragments", output);
+		Assert.Contains("X to clear pending audio and text", output);
+		Assert.DoesNotContain("Unknown command", output);
+	}
+
+	[Theory]
+	[InlineData(' ')]
+	[InlineData('R')]
+	public async Task ConfiguredFinishHotkeySubmitsConsecutiveFragmentsWithoutStoppingOrClearingPendingAudio(char finishRecording)
+	{
+		using var host = CreateHost(new ApplicationSettings(pauseUntilRecordingStops: TimeSpan.FromMinutes(1),
+			availableSources: AudioSourceType.Microphone), new ConsoleHotkeySettings(finishRecording: finishRecording));
+		var transcriber = host.Services.GetRequiredService<TestTranscriber>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		var processor = (TestTextProcessor)host.Services.GetRequiredService<ITextProcessor>();
+		var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		transcriber.Recognize = async (frames, cancellationToken) =>
 		{
-			queue.Enqueue(new TranscriptionRequest(Guid.NewGuid(), "previous-session", AudioSourceType.Application,
-				DateTimeOffset.UtcNow, new AudioRecording(new float[] { 0.5f }, new AudioFormat(16000, 1))));
-		}
-		var builder = Host.CreateApplicationBuilder();
-		builder.Logging.ClearProviders();
-		var capture = new TestAudioCapture();
-		builder.Services.AddScoped<CaptureSessionContext>();
-		builder.Services.AddScoped(provider => new CaptureSession(
-			provider.GetRequiredService<CaptureSessionContext>(),
-			provider.GetRequiredService<IHostApplicationLifetime>(), capture, settings, queue, directory));
-		using var host = builder.Build();
-		await using var transcriber = new TestTranscriber();
-		var hotkeys = new ConsoleHotkeySettings(finishRecording: 'F', stopSession: 'T', clearQueue: 'X', quit: 'Z');
-		using var worker = new MainThreadWorker(capture, host.Services.GetRequiredService<IServiceScopeFactory>(),
-			host.Services.GetRequiredService<IHostApplicationLifetime>(), settings, transcriber, queue, hotkeys);
+			var value = frames[0].Samples.Span[0];
+			if (value == 0.5f)
+			{
+				firstStarted.TrySetResult();
+				await releaseFirst.Task.WaitAsync(cancellationToken);
+			}
+			return value == 0.5f ? "First fragment" : "Second fragment";
+		};
+		var records = new ConcurrentQueue<IReadOnlyList<AudioFrame>>();
+		using var subscription = host.Services.GetRequiredService<ConsoleCaptureSession>()
+			.MicrophoneRecordObservable.Subscribe(records.Enqueue);
 		var previousInput = Console.In;
 		var previousOutput = Console.Out;
-		using var input = new StringReader("1\n\nx\nt\nx\nz\n");
+		using var input = new ControlledInput();
 		using var output = new StringWriter();
-		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 		try
 		{
 			Console.SetIn(input);
 			Console.SetOut(output);
+			var worker = host.Services.GetRequiredService<MainThreadWorker>();
 			await worker.StartAsync(timeout.Token);
-			await worker.ExecuteTask!.WaitAsync(timeout.Token);
+			input.Send("1");
+			input.Send("");
+			while (capture.MicrophoneCaptures == 0)
+			{
+				await Task.Delay(10, timeout.Token);
+			}
+			await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.5f, 320).ToArray(),
+				new AudioFormat(16000, 1), TimeSpan.Zero));
+			input.Send(finishRecording.ToString());
+			await firstStarted.Task.WaitAsync(timeout.Token);
+			await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.25f, 320).ToArray(),
+				new AudioFormat(16000, 1), TimeSpan.Zero));
+			input.Send(finishRecording.ToString());
+			while (records.Count < 2 || input.Reads < 5)
+			{
+				await Task.Delay(10, timeout.Token);
+			}
+			Assert.Single(transcriber.Requests);
+			Assert.False(worker.ExecuteTask!.IsCompleted);
+			releaseFirst.TrySetResult();
+			Assert.Equal((AudioSourceType.Microphone, "First fragment"), await processor.Results.Reader.ReadAsync(timeout.Token));
+			Assert.Equal((AudioSourceType.Microphone, "Second fragment"), await processor.Results.Reader.ReadAsync(timeout.Token));
 			Assert.Equal(1, capture.MicrophoneCaptures);
-			Assert.Equal(0, queue.Count);
-			Assert.Contains("Removed 2 pending recording(s)", output.ToString());
-			Assert.Contains("Removed 0 pending recording(s)", output.ToString());
-			Assert.Contains("F to finish active recordings", output.ToString());
-			Assert.Contains("X to clear the transcription queue", output.ToString());
+			input.Send(finishRecording.ToString()); // No active recording: nothing new should be submitted.
+			input.Send("q");
+			await worker.ExecuteTask.WaitAsync(timeout.Token);
+			Assert.Equal(2, records.Count);
+			Assert.Equal(2, transcriber.Requests.Count);
+			Assert.DoesNotContain("Queues cleared", output.ToString());
 			Assert.DoesNotContain("Unknown command", output.ToString());
 		}
 		finally
 		{
+			input.Complete();
 			Console.SetIn(previousInput);
 			Console.SetOut(previousOutput);
-			if (Directory.Exists(directory))
-			{
-				Directory.Delete(directory, recursive: true);
-			}
 		}
+	}
+
+	[Theory]
+	[InlineData(' ', 'R', "Space")]
+	[InlineData('R', ' ', "R")]
+	public async Task StartupHelpShowsConfiguredHotkeyAndUnconfiguredAlternativeIsNotAnAlias(
+		char finishRecording, char unconfiguredKey, string keyName)
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone),
+			new ConsoleHotkeySettings(finishRecording: finishRecording));
+		var output = await RunWorkflowAsync(host, $"1\n\n{unconfiguredKey}\ns\nq\n");
+		Assert.Contains($"  {keyName} - send current audio fragments", output);
+		Assert.True(output.IndexOf("Hotkeys:", StringComparison.Ordinal) < output.IndexOf("Select microphone", StringComparison.Ordinal));
+		Assert.Contains("Unknown command", output);
 	}
 
 	[Fact]
@@ -157,28 +199,67 @@ public class AvailableSourcesTests
 		Assert.Throws<InvalidOperationException>(() => context.Initialize(null, application));
 	}
 
-	private static IHost CreateHost()
+	private sealed class ControlledInput : TextReader
+	{
+		private readonly Channel<string> _lines = Channel.CreateUnbounded<string>();
+		private int _reads;
+		internal int Reads => Volatile.Read(ref _reads);
+		internal void Send(string command) => _lines.Writer.TryWrite(command);
+		internal void Complete() => _lines.Writer.TryComplete();
+		public override string? ReadLine()
+		{
+			Interlocked.Increment(ref _reads);
+			try
+			{
+				return _lines.Reader.ReadAsync().AsTask().GetAwaiter().GetResult();
+			}
+			catch (ChannelClosedException)
+			{
+				return null;
+			}
+		}
+	}
+
+	private static IHost CreateHost(ApplicationSettings settings, ConsoleHotkeySettings? hotkeys = null)
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
-		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings());
-		builder.Services.AddSingleton<TranscriptionQueue>();
+		builder.Services.AddSingleton<IApplicationSettings>(settings);
+		builder.Services.AddSingleton(hotkeys ?? new ConsoleHotkeySettings());
+		builder.Services.AddSingleton<TestAudioCapture>();
+		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
+		builder.Services.AddSingleton<TestTranscriber>();
+		builder.Services.AddSingleton<ITranscriber>(provider => provider.GetRequiredService<TestTranscriber>());
+		builder.Services.AddSingleton<ITextProcessor, TestTextProcessor>();
+		builder.Services.AddSingleton<ConsoleCaptureSession>();
+		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
+		builder.Services.AddSingleton<ApplicationController>();
+		builder.Services.AddScoped<CaptureSessionContext>();
+		builder.Services.AddScoped<CaptureSession>();
+		builder.Services.AddSingleton<MainThreadWorker>();
 		return builder.Build();
 	}
 
-	private sealed class TestTranscriber : ITranscriber
+	private static async Task<string> RunWorkflowAsync(IHost host, string input)
 	{
-		public Task<string> TranscribeAsync(IReadOnlyList<AudioFrame> frames, CancellationToken cancellationToken = default)
+		var previousInput = Console.In;
+		var previousOutput = Console.Out;
+		using var reader = new StringReader(input);
+		using var output = new StringWriter();
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		try
 		{
-			throw new NotImplementedException();
+			Console.SetIn(reader);
+			Console.SetOut(output);
+			var worker = host.Services.GetRequiredService<MainThreadWorker>();
+			await worker.StartAsync(timeout.Token);
+			await worker.ExecuteTask!.WaitAsync(timeout.Token);
+			return output.ToString();
 		}
-
-		public bool IsReady { get; private set; }
-		public Task InitializeAsync(CancellationToken cancellationToken = default)
+		finally
 		{
-			IsReady = true;
-			return Task.CompletedTask;
+			Console.SetIn(previousInput);
+			Console.SetOut(previousOutput);
 		}
-		public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 }

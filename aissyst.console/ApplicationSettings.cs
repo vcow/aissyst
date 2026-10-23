@@ -20,8 +20,10 @@ public class ApplicationSettings : IApplicationSettings
 		string? transcriptionModelPath = null, Uri? transcriptionModelUrl = null,
 		string transcriptionModelSha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
 		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10,
-		int maxTranscriptionProcessingCount = 3, int maxTextProcessingCount = 3)
+		int maxTranscriptionProcessingCount = 1, int maxTextProcessingCount = 1)
 	{
+		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTranscriptionProcessingCount);
+		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTextProcessingCount);
 		if (transcriptionQueueCapacity <= 0)
 		{
 			throw new ArgumentOutOfRangeException(nameof(transcriptionQueueCapacity), "The transcription queue capacity must be positive.");

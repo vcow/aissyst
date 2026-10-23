@@ -36,6 +36,7 @@ public class ApplicationController : IAsyncDisposable
 	private readonly SemaphoreSlim _textProcessorSemaphore;
 
 	private bool _isDisposed;
+	private Task? _disposeTask;
 
 	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor, ICaptureSession captureSession,
 		ILogger<ApplicationController> logger, IApplicationSettings settings)
@@ -69,7 +70,15 @@ public class ApplicationController : IAsyncDisposable
 			.AddTo(_observableHandlers);
 	}
 
-	public async ValueTask DisposeAsync()
+	public ValueTask DisposeAsync()
+	{
+		lock (_trackedTasksLock)
+		{
+			return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+		}
+	}
+
+	private async Task DisposeCoreAsync()
 	{
 		_disposables.Remove(_observableHandlers);
 
@@ -182,7 +191,7 @@ public class ApplicationController : IAsyncDisposable
 			{
 				_trackedTasks = _trackedTasks.Remove(task);
 			}
-		});
+		}, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
 		return task;
 	}
@@ -197,6 +206,11 @@ public class ApplicationController : IAsyncDisposable
 		await _audioRecordsSemaphore.WaitAsync(_cancellationTokenSource.Token);
 		try
 		{
+			while (_audioRecordsQueue.Count >= _settings.TranscriptionQueueCapacity
+				&& _audioRecordsQueue.TryDequeue(out var removed))
+			{
+				_logger.LogWarning("Audio queue is full. Removed 1 oldest pending recording ({Source}, {Timestamp}).", removed.source, removed.ts);
+			}
 			_audioRecordsQueue.Enqueue((ts, source, frames));
 		}
 		finally
@@ -252,6 +266,11 @@ public class ApplicationController : IAsyncDisposable
 		await _textRecordsSemaphore.WaitAsync(_cancellationTokenSource.Token);
 		try
 		{
+			while (_textRecordsQueue.Count >= _settings.TranscriptionQueueCapacity)
+			{
+				_textRecordsQueue.Remove(_textRecordsQueue.First());
+				_logger.LogWarning("Text queue is full. Removed 1 oldest pending transcription.");
+			}
 			_textRecordsQueue.Add((ts, source, text));
 		}
 		finally
@@ -345,7 +364,7 @@ public class ApplicationController : IAsyncDisposable
 
 		try
 		{
-			// TODO: process
+			await _textProcessor.ProcessAsync(ts, source, text, _stoppingToken);
 		}
 		catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
 		{
