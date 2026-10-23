@@ -30,5 +30,8 @@ Desktop.ini
 # Captured audio
 /recordings/
 
+# Session transcripts
+/transcripts/
+
 # Downloaded transcription models (including application output directories)
 models/

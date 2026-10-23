@@ -6,6 +6,7 @@ using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -26,7 +27,8 @@ else
 
 IApplicationSettings settings = new ApplicationSettings(
 	pauseUntilRecordingStops: TimeSpan.FromSeconds(1),
-	availableSources: AudioSourceType.Both,
+	maxRecordingDuration: TimeSpan.FromSeconds(15),
+	availableSources: AudioSourceType.Application,
 	maxTranscriptionProcessingCount: 1,
 	maxTextProcessingCount: 1);
 
@@ -40,7 +42,10 @@ builder.Services.AddSingleton(new ConsoleHotkeySettings(
 	quit: 'Q'));
 builder.Services.AddSingleton<ConsoleCaptureSession>();
 builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
-builder.Services.AddSingleton<ITextProcessor, LoggingTextProcessor>();
+builder.Services.AddSingleton<ITextProcessor>(provider => new SessionFileTextProcessor(
+	Path.Combine(builder.Environment.ContentRootPath, "transcripts"),
+	provider.GetRequiredService<ILogger<SessionFileTextProcessor>>()));
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = Timeout.InfiniteTimeSpan);
 builder.Services.AddSingleton<ApplicationController>();
 builder.Services.AddScoped<CaptureSessionContext>();
 builder.Services.AddScoped<CaptureSession>();

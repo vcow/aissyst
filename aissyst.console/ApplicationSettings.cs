@@ -6,6 +6,7 @@ public class ApplicationSettings : IApplicationSettings
 {
 	public AudioSourceType AvailableSources { get; }
 	public TimeSpan PauseUntilRecordingStops { get; }
+	public TimeSpan MaxRecordingDuration { get; }
 	public float SignalThreshold { get; }
 	public string TranscriptionModelPath { get; }
 	public Uri TranscriptionModelUrl { get; }
@@ -20,7 +21,8 @@ public class ApplicationSettings : IApplicationSettings
 		string? transcriptionModelPath = null, Uri? transcriptionModelUrl = null,
 		string transcriptionModelSha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
 		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10,
-		int maxTranscriptionProcessingCount = 1, int maxTextProcessingCount = 1)
+		int maxTranscriptionProcessingCount = 1, int maxTextProcessingCount = 1,
+		TimeSpan? maxRecordingDuration = null)
 	{
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTranscriptionProcessingCount);
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTextProcessingCount);
@@ -43,6 +45,11 @@ public class ApplicationSettings : IApplicationSettings
 		TranscriptionLanguage = transcriptionLanguage;
 		AvailableSources = availableSources;
 		PauseUntilRecordingStops = pauseUntilRecordingStops ?? TimeSpan.FromSeconds(1);
+		MaxRecordingDuration = maxRecordingDuration ?? TimeSpan.FromSeconds(30);
+		if (MaxRecordingDuration <= TimeSpan.Zero)
+		{
+			throw new ArgumentOutOfRangeException(nameof(maxRecordingDuration), "The maximum recording duration must be positive.");
+		}
 		if (PauseUntilRecordingStops <= TimeSpan.Zero)
 		{
 			throw new ArgumentOutOfRangeException(nameof(pauseUntilRecordingStops));

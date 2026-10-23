@@ -199,6 +199,92 @@ public class AvailableSourcesTests
 		Assert.Throws<InvalidOperationException>(() => context.Initialize(null, application));
 	}
 
+	[Theory]
+	[InlineData("s")]
+	[InlineData("q")]
+	[InlineData("shutdown")]
+	public async Task SessionSavesTextAfterPendingAndFinalRecordingsFinish(string stopCommand)
+	{
+		var directory = Path.Combine(Path.GetTempPath(), $"aissyst-session-save-{Guid.NewGuid():N}");
+		var processor = new SessionFileTextProcessor(directory,
+			Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionFileTextProcessor>.Instance);
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone,
+			pauseUntilRecordingStops: TimeSpan.FromMinutes(1)), textProcessor: processor);
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		host.Services.GetRequiredService<TestTranscriber>().Recognize = async (frames, cancellationToken) =>
+		{
+			if (frames[0].Samples.Span[0] == 0.5f)
+			{
+				entered.TrySetResult();
+				await release.Task.WaitAsync(cancellationToken);
+				return "First fragment.";
+			}
+			return "Final fragment.";
+		};
+		var previousInput = Console.In;
+		var previousOutput = Console.Out;
+		using var input = new ControlledInput();
+		using var output = new StringWriter();
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		try
+		{
+			Console.SetIn(input);
+			Console.SetOut(output);
+			var worker = host.Services.GetRequiredService<MainThreadWorker>();
+			await worker.StartAsync(timeout.Token);
+			input.Send("1");
+			input.Send("");
+			while (capture.MicrophoneCaptures == 0)
+			{
+				await Task.Delay(10, timeout.Token);
+			}
+			await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.5f, 320).ToArray(),
+				new AudioFormat(16000, 1), TimeSpan.Zero));
+			input.Send(" ");
+			await entered.Task.WaitAsync(timeout.Token);
+			await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.25f, 320).ToArray(),
+				new AudioFormat(16000, 1), TimeSpan.Zero));
+			Task stop = Task.CompletedTask;
+			if (stopCommand == "shutdown")
+			{
+				stop = worker.StopAsync(timeout.Token);
+			}
+			else
+			{
+				input.Send(stopCommand);
+			}
+			while (!output.ToString().Contains("Finishing pending transcriptions"))
+			{
+				await Task.Delay(10, timeout.Token);
+			}
+			Assert.False(Directory.Exists(directory));
+			Assert.False(worker.ExecuteTask!.IsCompleted);
+			release.TrySetResult();
+			if (stopCommand == "s")
+			{
+				input.Send("q");
+			}
+			await worker.ExecuteTask.WaitAsync(timeout.Token);
+			await stop.WaitAsync(timeout.Token);
+			var session = Assert.Single(Directory.GetDirectories(directory));
+			Assert.Equal("First fragment. Final fragment.", await File.ReadAllTextAsync(Path.Combine(session, "microphone.txt")));
+			Assert.Empty(await File.ReadAllTextAsync(Path.Combine(session, "application.txt")));
+		}
+		finally
+		{
+			release.TrySetResult();
+			input.Complete();
+			Console.SetIn(previousInput);
+			Console.SetOut(previousOutput);
+			if (Directory.Exists(directory))
+			{
+				Directory.Delete(directory, recursive: true);
+			}
+		}
+	}
+
 	private sealed class ControlledInput : TextReader
 	{
 		private readonly Channel<string> _lines = Channel.CreateUnbounded<string>();
@@ -220,7 +306,8 @@ public class AvailableSourcesTests
 		}
 	}
 
-	private static IHost CreateHost(ApplicationSettings settings, ConsoleHotkeySettings? hotkeys = null)
+	private static IHost CreateHost(ApplicationSettings settings, ConsoleHotkeySettings? hotkeys = null,
+		ITextProcessor? textProcessor = null)
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
@@ -230,7 +317,14 @@ public class AvailableSourcesTests
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
 		builder.Services.AddSingleton<TestTranscriber>();
 		builder.Services.AddSingleton<ITranscriber>(provider => provider.GetRequiredService<TestTranscriber>());
-		builder.Services.AddSingleton<ITextProcessor, TestTextProcessor>();
+		if (textProcessor == null)
+		{
+			builder.Services.AddSingleton<ITextProcessor, TestTextProcessor>();
+		}
+		else
+		{
+			builder.Services.AddSingleton(textProcessor);
+		}
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 		builder.Services.AddSingleton<ApplicationController>();

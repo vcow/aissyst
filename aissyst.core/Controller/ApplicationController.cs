@@ -61,12 +61,12 @@ public class ApplicationController : IAsyncDisposable
 
 		_captureSession.MicrophoneRecordObservable
 			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Microphone, frames)))
+				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Microphone, frames), tracked: true))
 			.AddTo(_observableHandlers);
 
 		_captureSession.ApplicationRecordingObservable
 			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Application, frames)))
+				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Application, frames), tracked: true))
 			.AddTo(_observableHandlers);
 	}
 
@@ -131,6 +131,44 @@ public class ApplicationController : IAsyncDisposable
 		}
 
 		return ClearQueuesInternal(cancellationToken);
+	}
+
+	public async Task BeginSessionAsync(CancellationToken cancellationToken = default)
+	{
+		await DrainAsync(cancellationToken);
+		if (_textProcessor is ISessionTextProcessor processor)
+		{
+			await processor.BeginSessionAsync(cancellationToken);
+		}
+	}
+
+	// Stop the audio sources before calling this method so that no new records arrive.
+	public async Task CompleteSessionAsync(CancellationToken cancellationToken = default)
+	{
+		await DrainAsync(cancellationToken);
+		if (_textProcessor is ISessionTextProcessor processor)
+		{
+			await processor.CompleteSessionAsync(cancellationToken);
+		}
+	}
+
+	private async Task DrainAsync(CancellationToken cancellationToken)
+	{
+		while (true)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			Task[] pending;
+			lock (_trackedTasksLock)
+			{
+				ObjectDisposedException.ThrowIf(_isDisposed, this);
+				pending = _trackedTasks.Where(task => !task.IsCompleted).ToArray();
+			}
+			if (pending.Length == 0)
+			{
+				return;
+			}
+			await Task.WhenAll(pending).WaitAsync(cancellationToken);
+		}
 	}
 
 	private async Task<(int recordsCleared, int transcriptionsCleared)> ClearQueuesInternal(CancellationToken cancellationToken = default)
@@ -346,7 +384,7 @@ public class ApplicationController : IAsyncDisposable
 		finally
 		{
 			_transcriberSemaphore.Release();
-			_ = RunBackgroundAsync(() => DequeAudio(false));
+			_ = RunBackgroundAsync(() => DequeAudio(false), tracked: true);
 		}
 	}
 
@@ -376,7 +414,7 @@ public class ApplicationController : IAsyncDisposable
 		finally
 		{
 			_textProcessorSemaphore.Release();
-			_ = RunBackgroundAsync(() => DequeText(false));
+			_ = RunBackgroundAsync(() => DequeText(false), tracked: true);
 		}
 	}
 

@@ -185,7 +185,10 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			case EventKind.Frame:
 				var recorder = item.Source == AudioSourceType.Microphone ? microphone : application;
-				await PublishIfPresentAsync(recorder.Append(item.Frame!, item.At), item.Source);
+				foreach (var recording in recorder.Append(item.Frame!, item.At))
+				{
+					await PublishIfPresentAsync(recording, item.Source);
+				}
 				break;
 			case EventKind.Tick:
 				await PublishIfPresentAsync(microphone.CompleteIfSilent(item.At), AudioSourceType.Microphone);
