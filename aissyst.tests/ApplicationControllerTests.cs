@@ -2,6 +2,8 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.LLMConnector.DTO;
+using aissyst.core.LLMConnector.Model;
 using Microsoft.Extensions.Logging.Abstractions;
 using R3;
 
@@ -122,11 +124,56 @@ public class ApplicationControllerTests
 		Assert.Equal(0, connector.Requests);
 	}
 
+	[Fact]
+	public async Task NewAssistanceCancelsPreviousRequestAndIgnoresItsLateResponse()
+	{
+		using var source = new TestCaptureSession();
+		var processor = new TestTextProcessor();
+		var connector = new TestLLMConnector { Initialize = (_, _) => Task.FromResult(new DialogResponse()) };
+		var entered = new TaskCompletionSource<DialogRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+		connector.Send = async (request, cancellationToken) =>
+		{
+			if (request.Request == RequestType.Translate)
+			{
+				using var registration = cancellationToken.Register(() => cancelled.TrySetResult());
+				entered.TrySetResult(request);
+				// Simulate a provider that finishes after cancellation was requested.
+				return await release.Task;
+			}
+			return new DialogResponse { RequestId = request.Id, Summary = "Latest summary.", Message = "Latest answer." };
+		};
+		var output = new TestOutput();
+		await using var model = new SessionModel(processor.Selector, new TestSessionDatabase(), processor,
+			connector, new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+		await using var controller = Create(source, new TestTranscriber(), processor, connector: connector, output: output, model: model);
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		try
+		{
+			await controller.InitializeAsync(timeout.Token);
+			var first = controller.SendRequestAsync(RequestType.Translate, timeout.Token);
+			var payload = await entered.Task.WaitAsync(timeout.Token);
+			await controller.WaitForIdleAsync(timeout.Token);
+			Assert.False(first.IsCompleted);
+			await controller.SendRequestAsync(RequestType.Reply, timeout.Token);
+			await cancelled.Task.WaitAsync(timeout.Token);
+			release.TrySetResult(new DialogResponse { RequestId = payload.Id, Summary = "Obsolete summary.", Message = "Obsolete answer." });
+			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+			Assert.Equal("Latest answer.", Assert.Single(output.Answers));
+			Assert.Equal("Latest summary.", model.GetRequest(RequestType.Summary).Summary);
+		}
+		finally
+		{
+			release.TrySetResult(new DialogResponse());
+		}
+	}
+
 	private static ApplicationController Create(TestCaptureSession source, TestTranscriber transcriber,
 		TestTextProcessor processor, ApplicationSettings? settings = null, TestOutput? output = null,
-		TestLLMConnector? connector = null) =>
+		TestLLMConnector? connector = null, SessionModel? model = null) =>
 		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, connector ?? new TestLLMConnector(),
-			output ?? new TestOutput(), settings ?? new ApplicationSettings(), processor.Selector);
+			output ?? new TestOutput(), settings ?? new ApplicationSettings(), processor.Selector, model);
 
 	private static IReadOnlyList<AudioFrame> Frames(float value) =>
 		[new(new float[] { value }, new AudioFormat(16000, 1), TimeSpan.Zero)];

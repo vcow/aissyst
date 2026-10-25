@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using aissyst.core.Audio;
 using aissyst.core.LLMConnector;
+using aissyst.core.LLMConnector.DTO;
 using aissyst.core.LLMConnector.Model;
 using aissyst.core.Output;
 using aissyst.core.Processor;
@@ -34,6 +35,7 @@ public class ApplicationController : IAsyncDisposable
 	private readonly Lock _trackedTasksLock = new();
 	private readonly Lock _textProcessingLock = new();
 	private ImmutableHashSet<Task> _trackedTasks = new HashSet<Task>().ToImmutableHashSet();
+	private ImmutableHashSet<Task> _trackedRequestTasks = ImmutableHashSet<Task>.Empty;
 
 	private readonly ConcurrentQueue<(DateTime ts, AudioSourceType source, IReadOnlyList<AudioFrame> frames)> _audioRecordsQueue = new();
 	private readonly SortedSet<DialogMessage> _textRecordsQueue = new(new DialogMessageComparer());
@@ -45,6 +47,7 @@ public class ApplicationController : IAsyncDisposable
 
 	private bool _isDisposed;
 	private Task? _disposeTask;
+	private CancellationTokenSource? _requestCancellation;
 
 	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor,
 		ICaptureSession captureSession, ILogger<ApplicationController> logger, ILLMConnector llmConnector,
@@ -107,7 +110,7 @@ public class ApplicationController : IAsyncDisposable
 		Task[] trackedTasks;
 		lock (_trackedTasksLock)
 		{
-			trackedTasks = _trackedTasks.ToArray();
+			trackedTasks = _trackedTasks.Concat(_trackedRequestTasks).ToArray();
 		}
 
 		var completion = Task.WhenAll(trackedTasks);
@@ -143,12 +146,100 @@ public class ApplicationController : IAsyncDisposable
 		{
 			await RunTrackedAsync(() => _textProcessor.InitializeAsync(cts.Token));
 		}
+
 		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
 
 		var dialog = _textProcessor.GetDialog(DateTime.MinValue);
 		foreach (var message in dialog)
 		{
 			_output.PrintDialogMessage(message);
+		}
+	}
+
+	public async Task<DialogResponse> SendRequestAsync(RequestType request, CancellationToken cancellationToken = default)
+	{
+		CancellationToken requestToken = default;
+		try
+		{
+			Task<DialogResponse> operation;
+			lock (_trackedTasksLock)
+			{
+				ObjectDisposedException.ThrowIf(_isDisposed, this);
+				cancellationToken.ThrowIfCancellationRequested();
+				var previous = _requestCancellation;
+				var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_stoppingToken, cancellationToken);
+				requestToken = cancellation.Token;
+				_requestCancellation = cancellation;
+				var previousCancellation = previous?.CancelAsync() ?? Task.CompletedTask;
+				operation = SendRequestCoreAsync(request, previousCancellation, cancellation);
+				_ = RunTrackedAsync(() => ObserveRequestCompletionAsync(operation), isRequest: true);
+			}
+			return await operation;
+		}
+		catch (OperationCanceledException) when (requestToken.IsCancellationRequested || cancellationToken.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "Failed to process the LLM assistance request.");
+			throw;
+		}
+	}
+
+	private async Task<DialogResponse> SendRequestCoreAsync(RequestType request, Task previousCancellation,
+		CancellationTokenSource cancellation)
+	{
+		try
+		{
+			await previousCancellation;
+			var cancellationToken = cancellation.Token;
+			cancellationToken.ThrowIfCancellationRequested();
+			var model = _sessionModel ?? throw new InvalidOperationException("The session model is not configured.");
+			var payload = model.GetRequest(request);
+			var result = await _llmConnector.SendRequest(payload, cancellationToken);
+			lock (_trackedTasksLock)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				if (!string.IsNullOrWhiteSpace(result.Error))
+				{
+					_logger.LogError("LLM request failed: {Error}", result.Error);
+					return result;
+				}
+				if (result.RequestId != payload.Id)
+				{
+					throw new InvalidDataException("The LLM response does not match the assistance request.");
+				}
+				model.Reset(result);
+				if (!string.IsNullOrWhiteSpace(result.Message))
+				{
+					_output.PrintLLMAnswer(result.Message);
+				}
+				return result;
+			}
+		}
+		finally
+		{
+			lock (_trackedTasksLock)
+			{
+				if (ReferenceEquals(_requestCancellation, cancellation))
+				{
+					_requestCancellation = null;
+				}
+			}
+			cancellation.Dispose();
+		}
+	}
+
+	private static async Task ObserveRequestCompletionAsync(Task<DialogResponse> operation)
+	{
+		try
+		{
+			await operation;
+		}
+		catch (Exception)
+		{
+			// SendRequestAsync logs failures; disposal only needs to wait for completion.
 		}
 	}
 
@@ -222,7 +313,7 @@ public class ApplicationController : IAsyncDisposable
 		return tracked ? RunTrackedAsync(ObserveAsync) : ObserveAsync();
 	}
 
-	private Task RunTrackedAsync(Func<Task> operation)
+	private Task RunTrackedAsync(Func<Task> operation, bool isRequest = false)
 	{
 		Task task;
 		lock (_trackedTasksLock)
@@ -233,14 +324,28 @@ public class ApplicationController : IAsyncDisposable
 			}
 
 			task = operation();
-			_trackedTasks = _trackedTasks.Add(task);
+			if (isRequest)
+			{
+				_trackedRequestTasks = _trackedRequestTasks.Add(task);
+			}
+			else
+			{
+				_trackedTasks = _trackedTasks.Add(task);
+			}
 		}
 
 		task.ContinueWith(_ =>
 		{
 			lock (_trackedTasksLock)
 			{
-				_trackedTasks = _trackedTasks.Remove(task);
+				if (isRequest)
+				{
+					_trackedRequestTasks = _trackedRequestTasks.Remove(task);
+				}
+				else
+				{
+					_trackedTasks = _trackedTasks.Remove(task);
+				}
 			}
 		}, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
@@ -438,6 +543,7 @@ public class ApplicationController : IAsyncDisposable
 			_textProcessorSemaphore.Release();
 			_ = RunBackgroundAsync(() => DequeText(false), tracked: true);
 		}
+
 		return Task.CompletedTask;
 	}
 }

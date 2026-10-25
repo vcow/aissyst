@@ -80,12 +80,12 @@ public sealed class TextProcessorInitializationTests
 	public async Task FailedLoadCanBeRetriedWithoutPublishingPartialRecords()
 	{
 		var database = new TestSessionDatabase();
-		database.Session = database.Session with { Dialog = [new DialogRecord(DateTime.UtcNow, "invalid-role", "Text")] };
+		database.Load = (_, _) => Task.FromException<SessionContext>(new IOException("Test database failure."));
 		await using var processor = await CreateAsync(new TestSessionSelector(), database);
-		await Assert.ThrowsAsync<InvalidDataException>(() => processor.InitializeAsync());
+		await Assert.ThrowsAsync<IOException>(() => processor.InitializeAsync());
 		Assert.False(processor.IsReady);
 		Assert.Empty(processor.GetDialog(DateTime.MinValue));
-		database.Session = database.Session with { Dialog = [] };
+		database.Load = null;
 		await processor.InitializeAsync();
 		Assert.True(processor.IsReady);
 	}

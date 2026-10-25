@@ -4,6 +4,8 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.Database;
+using aissyst.core.LLMConnector.DTO;
 using aissyst.core.Output;
 using aissyst.core.LLMConnector;
 using aissyst.core.LLMConnector.Model;
@@ -352,6 +354,122 @@ public class AvailableSourcesTests
 		}
 	}
 
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task AssistanceHotkeysSendAllFiveRequestTypesAndPrintAnswers(bool whileListening)
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone), useSessionModel: true);
+		var connector = host.Services.GetRequiredService<TestLLMConnector>();
+		connector.Initialize = (_, _) => Task.FromResult(new DialogResponse());
+		var received = Channel.CreateUnbounded<RequestType>();
+		connector.Send = (request, _) =>
+		{
+			received.Writer.TryWrite(request.Request);
+			return Task.FromResult(new DialogResponse
+			{
+				RequestId = request.Id, Summary = request.Summary,
+				SummaryTimestamp = request.RawRecords.LastOrDefault()?.Timestamp,
+				Message = request.Request.ToString()
+			});
+		};
+		var previousInput = Console.In;
+		var previousOutput = Console.Out;
+		using var input = new ControlledInput();
+		using var output = new StringWriter();
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		try
+		{
+			Console.SetIn(input);
+			Console.SetOut(output);
+			var worker = host.Services.GetRequiredService<MainThreadWorker>();
+			await worker.StartAsync(timeout.Token);
+			input.Send("1");
+			if (whileListening)
+			{
+				input.Send("");
+			}
+			var answers = ((TestOutput)host.Services.GetRequiredService<IOutput>()).Answers;
+			var expected = new[] { RequestType.Translate, RequestType.Advice, RequestType.Reply, RequestType.TranslateAndAdvice, RequestType.TranslateAndReply };
+			for (var index = 0; index < expected.Length; index++)
+			{
+				input.Send((index + 1).ToString());
+				Assert.Equal(expected[index], await received.Reader.ReadAsync(timeout.Token));
+				while (answers.Count < index + 1)
+				{
+					await Task.Delay(10, timeout.Token);
+				}
+			}
+			input.Send("q");
+			await worker.ExecuteTask!.WaitAsync(timeout.Token);
+			Assert.Equal(expected.Select(type => type.ToString()), answers);
+			Assert.Equal(5, connector.Requests);
+			Assert.Contains("1 - translate", output.ToString());
+			Assert.Contains("5 - translate and provide a full answer", output.ToString());
+			Assert.DoesNotContain("Unknown command", output.ToString());
+		}
+		finally
+		{
+			input.Complete();
+			Console.SetIn(previousInput);
+			Console.SetOut(previousOutput);
+		}
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task QuitCancelsPendingAssistanceWithoutBlockingKeyboardInput(bool whileListening)
+	{
+		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone), useSessionModel: true);
+		var connector = host.Services.GetRequiredService<TestLLMConnector>();
+		connector.Initialize = (_, _) => Task.FromResult(new DialogResponse());
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		connector.Send = async (_, cancellationToken) =>
+		{
+			entered.TrySetResult();
+			try
+			{
+				await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+			}
+			finally
+			{
+				cancelled.TrySetResult();
+			}
+			return new DialogResponse();
+		};
+		var previousInput = Console.In;
+		var previousOutput = Console.Out;
+		using var input = new ControlledInput();
+		using var output = new StringWriter();
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		try
+		{
+			Console.SetIn(input);
+			Console.SetOut(output);
+			var worker = host.Services.GetRequiredService<MainThreadWorker>();
+			await worker.StartAsync(timeout.Token);
+			input.Send("1");
+			if (whileListening)
+			{
+				input.Send("");
+			}
+			input.Send("2");
+			await entered.Task.WaitAsync(timeout.Token);
+			input.Send("q");
+			await worker.ExecuteTask!.WaitAsync(timeout.Token);
+			await cancelled.Task.WaitAsync(timeout.Token);
+			Assert.Empty(((TestOutput)host.Services.GetRequiredService<IOutput>()).Answers);
+		}
+		finally
+		{
+			input.Complete();
+			Console.SetIn(previousInput);
+			Console.SetOut(previousOutput);
+		}
+	}
+
 	private sealed class ControlledInput : TextReader
 	{
 		private readonly Channel<string> _lines = Channel.CreateUnbounded<string>();
@@ -374,7 +492,7 @@ public class AvailableSourcesTests
 	}
 
 	private static IHost CreateHost(ApplicationSettings settings, ConsoleHotkeySettings? hotkeys = null,
-		ITextProcessor? textProcessor = null)
+		ITextProcessor? textProcessor = null, bool useSessionModel = false)
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
@@ -394,7 +512,13 @@ public class AvailableSourcesTests
 		{
 			builder.Services.AddSingleton(textProcessor);
 		}
-		builder.Services.AddSingleton<ILLMConnector, TestLLMConnector>();
+		builder.Services.AddSingleton<TestLLMConnector>();
+		builder.Services.AddSingleton<ILLMConnector>(provider => provider.GetRequiredService<TestLLMConnector>());
+		if (useSessionModel)
+		{
+			builder.Services.AddSingleton<IDatabase, TestSessionDatabase>();
+			builder.Services.AddSingleton<SessionModel>();
+		}
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 		builder.Services.AddSingleton<ApplicationController>();

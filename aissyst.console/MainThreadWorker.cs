@@ -1,6 +1,7 @@
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.LLMConnector.DTO;
 using aissyst.core.Processor;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -53,8 +54,8 @@ public class MainThreadWorker : BackgroundService
 			}
 			while (!stoppingToken.IsCancellationRequested)
 			{
-				Console.Write($"Press Enter to start a session, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit: ");
-				var command = await ConsoleInput.ReadLineAsync(stoppingToken);
+				Console.Write($"Press Enter to start a session, use an assistance hotkey, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit: ");
+				var command = await ConsoleInput.ReadCommandAsync(stoppingToken);
 				if (command == null || Matches(command, _hotkeys.Quit))
 				{
 					return;
@@ -64,10 +65,15 @@ public class MainThreadWorker : BackgroundService
 					await ClearQueuesAsync(stoppingToken);
 					continue;
 				}
+				if (_hotkeys.TryGetRequestType(command, out var request))
+				{
+					_ = SendHelpRequestAsync(request, stoppingToken);
+					continue;
+				}
 
 				if (!string.IsNullOrWhiteSpace(command))
 				{
-					Console.WriteLine($"Unknown command. Press Enter to start, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit.");
+					Console.WriteLine($"Unknown command. Press Enter to start, use an assistance hotkey, enter {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit.");
 					continue;
 				}
 
@@ -122,6 +128,7 @@ public class MainThreadWorker : BackgroundService
 			sessionStarted = true;
 
 			Console.WriteLine("Session started. Waiting for audio.");
+			WriteAssistanceHotkeyHelp();
 			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {KeyName(_hotkeys.FinishRecording)} to send the current fragments and keep listening, "
 				+ $"{_hotkeys.StopSession} to stop listening, {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit."
 				+ (Console.IsInputRedirected ? " Then press Enter." : " Ctrl+C also quits."));
@@ -155,9 +162,14 @@ public class MainThreadWorker : BackgroundService
 						await session.CompleteRecordingsAsync(stoppingToken);
 						continue;
 					}
+					if (_hotkeys.TryGetRequestType(command, out var request))
+					{
+						_ = SendHelpRequestAsync(request, stoppingToken);
+						continue;
+					}
 
 					Console.WriteLine($"Unknown command. Use {KeyName(_hotkeys.FinishRecording)} to send the current fragments, {_hotkeys.StopSession} to stop listening, "
-						+ $"{_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit.");
+						+ $"{_hotkeys.ClearQueue} to clear pending audio and text, an assistance hotkey, or {_hotkeys.Quit} to quit.");
 				}
 			}
 			finally
@@ -194,6 +206,7 @@ public class MainThreadWorker : BackgroundService
 		Console.WriteLine($"  {_hotkeys.StopSession} - stop listening.");
 		Console.WriteLine($"  {_hotkeys.ClearQueue} - clear pending audio and text.");
 		Console.WriteLine($"  {_hotkeys.Quit} / Ctrl+C - quit.");
+		WriteAssistanceHotkeyHelp();
 		if (Console.IsInputRedirected)
 		{
 			Console.WriteLine("Line input: press Enter after each command.");
@@ -203,6 +216,31 @@ public class MainThreadWorker : BackgroundService
 			}
 		}
 		Console.WriteLine();
+	}
+
+	private void WriteAssistanceHotkeyHelp()
+	{
+		Console.WriteLine($"  {_hotkeys.Translate} - translate the interviewer's last message into Russian.");
+		Console.WriteLine($"  {_hotkeys.Advice} - suggest an answer in English.");
+		Console.WriteLine($"  {_hotkeys.Reply} - provide a full answer in English.");
+		Console.WriteLine($"  {_hotkeys.TranslateAndAdvice} - translate and suggest an answer.");
+		Console.WriteLine($"  {_hotkeys.TranslateAndReply} - translate and provide a full answer.");
+	}
+
+	private async Task SendHelpRequestAsync(RequestType request, CancellationToken cancellationToken)
+	{
+		try
+		{
+			await _controller.SendRequestAsync(request, cancellationToken);
+		}
+		catch (OperationCanceledException)
+		{
+			// A newer request or application shutdown cancels the previous request.
+		}
+		catch (Exception)
+		{
+			// The controller logs request failures; keyboard input remains available.
+		}
 	}
 
 	private async Task ClearQueuesAsync(CancellationToken cancellationToken)
