@@ -14,4 +14,8 @@
     <InternalsVisibleTo Include="aissyst.tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Model\" />
+  </ItemGroup>
+
 </Project>
