@@ -1,18 +1,20 @@
 using System.Text;
+using aissyst.core;
+using aissyst.core.Processor;
 using Microsoft.Extensions.Logging;
 
-namespace aissyst.core.Processor;
+namespace aissyst.console;
 
-public sealed class SessionFileTextProcessor : ISessionTextProcessor
+public sealed class SessionFileTextProcessor : ITextProcessor
 {
 	private readonly string _outputDirectory;
 	private readonly ILogger<SessionFileTextProcessor> _logger;
 	private readonly Lock _sync = new();
-	private readonly List<(DateTime Timestamp, string Text)> _microphone = [];
-	private readonly List<(DateTime Timestamp, string Text)> _application = [];
+	private readonly List<DialogMessage> _dialog = [];
 	private bool _initialized;
 	private bool _saving;
 	private string? _sessionDirectory;
+	private DialogMessage? _pendingMessage;
 
 	public SessionFileTextProcessor(string outputDirectory, ILogger<SessionFileTextProcessor> logger)
 	{
@@ -53,15 +55,14 @@ public sealed class SessionFileTextProcessor : ISessionTextProcessor
 				throw new InvalidOperationException("Complete the current transcription session before starting another one.");
 			}
 			_sessionDirectory = Path.Combine(_outputDirectory, $"session-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}");
+			_pendingMessage = null;
 		}
 		return Task.CompletedTask;
 	}
 
-	public Task ProcessAsync(DateTime timestamp, AudioSourceType source, string text,
-		CancellationToken cancellationToken = default)
+	public DialogMessage? Process(DialogMessage message)
 	{
-		cancellationToken.ThrowIfCancellationRequested();
-		var normalized = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+		var normalized = string.Join(" ", message.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 		lock (_sync)
 		{
 			EnsureInitialized();
@@ -69,22 +70,28 @@ public sealed class SessionFileTextProcessor : ISessionTextProcessor
 			{
 				throw new InvalidOperationException("There is no active transcription session accepting text.");
 			}
-			var records = source switch
+			if (message.Source is not (AudioSourceType.Microphone or AudioSourceType.Application))
 			{
-				AudioSourceType.Microphone => _microphone,
-				AudioSourceType.Application => _application,
-				_ => throw new ArgumentOutOfRangeException(nameof(source), "A single supported audio source is required.")
-			};
-			if (normalized.Length != 0)
-			{
-				records.Add((timestamp, normalized));
+				throw new ArgumentOutOfRangeException(nameof(message.Source), "A single supported audio source is required.");
 			}
+			if (normalized.Length == 0)
+			{
+				return null;
+			}
+			var next = message with { Text = normalized };
+			DialogMessage? completed = null;
+			if (_pendingMessage is { } pending && pending.Source == next.Source)
+			{
+				_pendingMessage = next with { Text = pending.Text + " " + next.Text };
+			}
+			else
+			{
+				completed = _pendingMessage;
+				_pendingMessage = next;
+			}
+			_dialog.Add(next);
+			return completed;
 		}
-		if (normalized.Length != 0)
-		{
-			_logger.LogInformation("{Source} [{Timestamp:HH:mm:ss}]: {Text}", source, timestamp, normalized);
-		}
-		return Task.CompletedTask;
 	}
 
 	public async Task CompleteSessionAsync(CancellationToken cancellationToken = default)
@@ -106,8 +113,10 @@ public sealed class SessionFileTextProcessor : ISessionTextProcessor
 			}
 			directory = _sessionDirectory;
 			// OrderBy is stable, so recordings with identical timestamps are retained.
-			microphone = string.Join(" ", _microphone.OrderBy(record => record.Timestamp).Select(record => record.Text));
-			application = string.Join(" ", _application.OrderBy(record => record.Timestamp).Select(record => record.Text));
+			microphone = string.Join(" ", _dialog.Where(message => message.Source == AudioSourceType.Microphone)
+				.OrderBy(message => message.Timestamp).Select(message => message.Text));
+			application = string.Join(" ", _dialog.Where(message => message.Source == AudioSourceType.Application)
+				.OrderBy(message => message.Timestamp).Select(message => message.Text));
 			_saving = true;
 		}
 		try
@@ -117,9 +126,9 @@ public sealed class SessionFileTextProcessor : ISessionTextProcessor
 			await File.WriteAllTextAsync(Path.Combine(directory, "application.txt"), application, new UTF8Encoding(false), cancellationToken);
 			lock (_sync)
 			{
-				_microphone.Clear();
-				_application.Clear();
+				_dialog.Clear();
 				_sessionDirectory = null;
+				_pendingMessage = null;
 			}
 			_logger.LogInformation("Session transcripts saved to {Directory}.", directory);
 		}
@@ -138,5 +147,15 @@ public sealed class SessionFileTextProcessor : ISessionTextProcessor
 		{
 			throw new InvalidOperationException("The text processor has not been initialized.");
 		}
+	}
+
+	public IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime)
+	{
+		DialogMessage[] snapshot;
+		lock (_sync)
+		{
+			snapshot = _dialog.ToArray();
+		}
+		return snapshot.ToDialog(fromTime);
 	}
 }

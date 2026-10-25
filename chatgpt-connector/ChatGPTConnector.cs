@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using aissyst.core.LLMConnector;
+using aissyst.core.LLMConnector.DTO;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
@@ -29,6 +30,12 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 	private ChatGPTAccount? _account;
 
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
+
+	public Task<DialogResponse> InitializeSession(Session session) =>
+		Task.FromException<DialogResponse>(new NotSupportedException("LLM session initialization has not been implemented."));
+
+	public Task<DialogResponse> SendRequest(DialogRequest request) =>
+		Task.FromException<DialogResponse>(new NotSupportedException("LLM requests have not been implemented."));
 
 	public ChatGPTConnector(HttpClient httpClient, IChatGPTAuthorization authorization,
 		ChatGPTConnectorOptions options, ILogger<ChatGPTConnector> logger)

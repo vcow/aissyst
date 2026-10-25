@@ -3,6 +3,7 @@ using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
 using aissyst.core.LLMConnector;
+using aissyst.core.Output;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using chatgpt_connector;
@@ -44,6 +45,7 @@ builder.Services.AddSingleton(new ConsoleHotkeySettings(
 builder.Services.AddSingleton<ConsoleCaptureSession>();
 builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 builder.Services.AddSingleton<ITextProcessor, LoggingTextProcessor>();
+builder.Services.AddSingleton<IOutput, ConsoleOutput>();
 builder.Services.AddSingleton(new ChatGPTConnectorOptions());
 builder.Services.AddSingleton<IChatGPTAuthorization, LoopbackChatGPTAuthorization>();
 builder.Services.AddSingleton<ILLMConnector, ChatGPTConnector>();

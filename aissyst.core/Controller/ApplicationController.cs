@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using aissyst.core.Audio;
 using aissyst.core.LLMConnector;
+using aissyst.core.LLMConnector.Model;
+using aissyst.core.Output;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.Logging;
@@ -18,6 +20,8 @@ public class ApplicationController : IAsyncDisposable
 	private readonly ICaptureSession _captureSession;
 	private readonly ILogger<ApplicationController> _logger;
 	private readonly ILLMConnector _llmConnector;
+	private readonly SessionModel? _sessionModel;
+	private readonly IOutput _output;
 	private readonly IApplicationSettings _settings;
 
 	private readonly CompositeDisposable _disposables = new();
@@ -27,10 +31,11 @@ public class ApplicationController : IAsyncDisposable
 	private readonly CancellationToken _stoppingToken;
 
 	private readonly Lock _trackedTasksLock = new();
+	private readonly Lock _textProcessingLock = new();
 	private ImmutableHashSet<Task> _trackedTasks = new HashSet<Task>().ToImmutableHashSet();
 
 	private readonly ConcurrentQueue<(DateTime ts, AudioSourceType source, IReadOnlyList<AudioFrame> frames)> _audioRecordsQueue = new();
-	private readonly SortedSet<(DateTime ts, AudioSourceType source, string text)> _textRecordsQueue = new(new TextRecordComparer());
+	private readonly SortedSet<DialogMessage> _textRecordsQueue = new(new DialogMessageComparer());
 
 	private readonly SemaphoreSlim _audioRecordsSemaphore;
 	private readonly SemaphoreSlim _textRecordsSemaphore;
@@ -41,13 +46,16 @@ public class ApplicationController : IAsyncDisposable
 	private Task? _disposeTask;
 
 	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor, ICaptureSession captureSession,
-		ILogger<ApplicationController> logger, ILLMConnector llmConnector, IApplicationSettings settings)
+		ILogger<ApplicationController> logger, ILLMConnector llmConnector, IOutput output,
+		IApplicationSettings settings, SessionModel? sessionModel = null)
 	{
 		_transcriber = transcriber;
 		_textProcessor = textProcessor;
 		_captureSession = captureSession;
 		_logger = logger;
 		_llmConnector = llmConnector;
+		_sessionModel = sessionModel;
+		_output = output;
 		_settings = settings;
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
@@ -125,6 +133,16 @@ public class ApplicationController : IAsyncDisposable
 		await RunTrackedAsync(() => _transcriber.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _textProcessor.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
+		if (_sessionModel != null)
+		{
+			await RunTrackedAsync(() => _sessionModel.InitializeAsync(cts.Token));
+		}
+
+		var dialog = _textProcessor.GetDialog(DateTime.MinValue);
+		foreach (var message in dialog)
+		{
+			_output.PrintDialogMessage(message);
+		}
 	}
 
 	public Task<(int recordsCleared, int transcriptionsCleared)> ClearQueues(CancellationToken cancellationToken = default)
@@ -137,26 +155,8 @@ public class ApplicationController : IAsyncDisposable
 		return ClearQueuesInternal(cancellationToken);
 	}
 
-	public async Task BeginSessionAsync(CancellationToken cancellationToken = default)
-	{
-		await DrainAsync(cancellationToken);
-		if (_textProcessor is ISessionTextProcessor processor)
-		{
-			await processor.BeginSessionAsync(cancellationToken);
-		}
-	}
-
-	// Stop the audio sources before calling this method so that no new records arrive.
-	public async Task CompleteSessionAsync(CancellationToken cancellationToken = default)
-	{
-		await DrainAsync(cancellationToken);
-		if (_textProcessor is ISessionTextProcessor processor)
-		{
-			await processor.CompleteSessionAsync(cancellationToken);
-		}
-	}
-
-	private async Task DrainAsync(CancellationToken cancellationToken)
+	// Stop the audio sources first if all pending work must finish before returning.
+	public async Task WaitForIdleAsync(CancellationToken cancellationToken = default)
 	{
 		while (true)
 		{
@@ -167,10 +167,12 @@ public class ApplicationController : IAsyncDisposable
 				ObjectDisposedException.ThrowIf(_isDisposed, this);
 				pending = _trackedTasks.Where(task => !task.IsCompleted).ToArray();
 			}
+
 			if (pending.Length == 0)
 			{
 				return;
 			}
+
 			await Task.WhenAll(pending).WaitAsync(cancellationToken);
 		}
 	}
@@ -249,10 +251,11 @@ public class ApplicationController : IAsyncDisposable
 		try
 		{
 			while (_audioRecordsQueue.Count >= _settings.TranscriptionQueueCapacity
-				&& _audioRecordsQueue.TryDequeue(out var removed))
+			       && _audioRecordsQueue.TryDequeue(out var removed))
 			{
 				_logger.LogWarning("Audio queue is full. Removed 1 oldest pending recording ({Source}, {Timestamp}).", removed.source, removed.ts);
 			}
+
 			_audioRecordsQueue.Enqueue((ts, source, frames));
 		}
 		finally
@@ -298,7 +301,7 @@ public class ApplicationController : IAsyncDisposable
 			: Transcribe(rec.ts, rec.source, rec.frames), tracked: true);
 	}
 
-	private async Task EnqueueText(DateTime ts, AudioSourceType source, string text)
+	private async Task EnqueueText(DialogMessage message)
 	{
 		if (_isDisposed)
 		{
@@ -313,7 +316,8 @@ public class ApplicationController : IAsyncDisposable
 				_textRecordsQueue.Remove(_textRecordsQueue.First());
 				_logger.LogWarning("Text queue is full. Removed 1 oldest pending transcription.");
 			}
-			_textRecordsQueue.Add((ts, source, text));
+
+			_textRecordsQueue.Add(message);
 		}
 		finally
 		{
@@ -333,7 +337,7 @@ public class ApplicationController : IAsyncDisposable
 			return;
 		}
 
-		(DateTime ts, AudioSourceType source, string text) rec;
+		DialogMessage message;
 		await _textRecordsSemaphore.WaitAsync(_cancellationTokenSource.Token);
 		try
 		{
@@ -348,8 +352,8 @@ public class ApplicationController : IAsyncDisposable
 				return;
 			}
 
-			rec = _textRecordsQueue.First();
-			_textRecordsQueue.Remove(rec);
+			message = _textRecordsQueue.First();
+			_textRecordsQueue.Remove(message);
 		}
 		finally
 		{
@@ -357,8 +361,8 @@ public class ApplicationController : IAsyncDisposable
 		}
 
 		_ = RunBackgroundAsync(() => processImmediate
-			? ProcessTextImmediate(rec.ts, rec.source, rec.text)
-			: ProcessText(rec.ts, rec.source, rec.text), tracked: true);
+			? ProcessTextImmediate(message)
+			: ProcessText(message), tracked: true);
 	}
 
 	private async Task Transcribe(DateTime ts, AudioSourceType source, IReadOnlyList<AudioFrame> frames)
@@ -376,7 +380,7 @@ public class ApplicationController : IAsyncDisposable
 		try
 		{
 			var text = await Task.Run(() => _transcriber.TranscribeAsync(frames, _cancellationTokenSource.Token), _cancellationTokenSource.Token);
-			await EnqueueText(ts, source, text);
+			await EnqueueText(new DialogMessage(ts, source, text));
 		}
 		catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
 		{
@@ -392,21 +396,28 @@ public class ApplicationController : IAsyncDisposable
 		}
 	}
 
-	private async Task ProcessText(DateTime ts, AudioSourceType source, string text)
+	private async Task ProcessText(DialogMessage message)
 	{
 		Debug.Assert(_textProcessor.IsReady, "Text processor isn't initialized.");
 
 		await _textProcessorSemaphore.WaitAsync(_cancellationTokenSource.Token);
-		await ProcessTextImmediate(ts, source, text);
+		await ProcessTextImmediate(message);
 	}
 
-	private async Task ProcessTextImmediate(DateTime ts, AudioSourceType source, string text)
+	private Task ProcessTextImmediate(DialogMessage message)
 	{
 		Debug.Assert(_textProcessorSemaphore.CurrentCount < _settings.MaxTextProcessingCount);
 
 		try
 		{
-			await _textProcessor.ProcessAsync(ts, source, text, _stoppingToken);
+			lock (_textProcessingLock)
+			{
+				var output = _textProcessor.Process(message);
+				if (output != null)
+				{
+					_output.PrintDialogMessage(output);
+				}
+			}
 		}
 		catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
 		{
@@ -420,16 +431,6 @@ public class ApplicationController : IAsyncDisposable
 			_textProcessorSemaphore.Release();
 			_ = RunBackgroundAsync(() => DequeText(false), tracked: true);
 		}
-	}
-
-	private class TextRecordComparer : IComparer<(DateTime ts, AudioSourceType source, string text)>
-	{
-		private readonly Comparer<DateTime> _comparer = Comparer<DateTime>.Default;
-
-		public int Compare((DateTime ts, AudioSourceType source, string text) x,
-			(DateTime ts, AudioSourceType source, string text) y)
-		{
-			return _comparer.Compare(x.ts, y.ts);
-		}
+		return Task.CompletedTask;
 	}
 }

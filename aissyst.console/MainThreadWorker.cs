@@ -1,6 +1,7 @@
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.Processor;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -14,10 +15,11 @@ public class MainThreadWorker : BackgroundService
 	private readonly IApplicationSettings _settings;
 	private readonly ApplicationController _controller;
 	private readonly ConsoleHotkeySettings _hotkeys;
+	private readonly ITextProcessor _textProcessor;
 
 	public MainThreadWorker(ConsoleCaptureSession captureSession, IServiceScopeFactory scopeFactory,
 		IHostApplicationLifetime applicationLifetime, IApplicationSettings settings, ApplicationController controller,
-		ConsoleHotkeySettings hotkeys)
+		ConsoleHotkeySettings hotkeys, ITextProcessor textProcessor)
 	{
 		_captureSession = captureSession;
 		_scopeFactory = scopeFactory;
@@ -25,6 +27,7 @@ public class MainThreadWorker : BackgroundService
 		_settings = settings;
 		_controller = controller;
 		_hotkeys = hotkeys;
+		_textProcessor = textProcessor;
 	}
 
 	protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -102,13 +105,18 @@ public class MainThreadWorker : BackgroundService
 	{
 		var sessionStarted = false;
 		var processingSessionStarted = false;
+		var fileTextProcessor = _textProcessor as SessionFileTextProcessor;
 		try
 		{
 			await using var scope = _scopeFactory.CreateAsyncScope();
 			var context = scope.ServiceProvider.GetRequiredService<CaptureSessionContext>();
 			context.Initialize(microphone, application);
 			var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
-			await _controller.BeginSessionAsync(stoppingToken);
+			await _controller.WaitForIdleAsync(stoppingToken);
+			if (fileTextProcessor != null)
+			{
+				await fileTextProcessor.BeginSessionAsync(stoppingToken);
+			}
 			processingSessionStarted = true;
 			session.Start();
 			sessionStarted = true;
@@ -161,9 +169,15 @@ public class MainThreadWorker : BackgroundService
 		{
 			if (processingSessionStarted)
 			{
-				Console.WriteLine("Finishing pending transcriptions and saving session text...");
+				Console.WriteLine(fileTextProcessor != null
+					? "Finishing pending transcriptions and saving session text..."
+					: "Finishing pending transcriptions...");
 				// Capture has stopped, but the controller must remain active until its queues are drained.
-				await _controller.CompleteSessionAsync();
+				await _controller.WaitForIdleAsync();
+				if (fileTextProcessor != null)
+				{
+					await fileTextProcessor.CompleteSessionAsync();
+				}
 			}
 			if (sessionStarted)
 			{

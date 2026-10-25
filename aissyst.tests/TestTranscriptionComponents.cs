@@ -38,6 +38,8 @@ internal sealed class TestTranscriber : ITranscriber
 
 internal sealed class TestTextProcessor : ITextProcessor
 {
+	private readonly LoggingTextProcessor _processor = new(Microsoft.Extensions.Logging.Abstractions.NullLogger<LoggingTextProcessor>.Instance);
+	private readonly ConcurrentQueue<DialogMessage> _dialog = new();
 	internal Channel<(AudioSourceType Source, string Text)> Results { get; } =
 		Channel.CreateUnbounded<(AudioSourceType, string)>();
 	public bool IsReady { get; private set; }
@@ -45,14 +47,19 @@ internal sealed class TestTextProcessor : ITextProcessor
 	public Task InitializeAsync(CancellationToken cancellationToken = default)
 	{
 		IsReady = true;
-		return Task.CompletedTask;
+		return _processor.InitializeAsync(cancellationToken);
 	}
 
-	public Task ProcessAsync(DateTime timestamp, AudioSourceType source, string text,
-		CancellationToken cancellationToken = default)
+	public DialogMessage? Process(DialogMessage message)
 	{
 		Assert.True(IsReady);
-		Results.Writer.TryWrite((source, text));
-		return Task.CompletedTask;
+		_dialog.Enqueue(message);
+		Results.Writer.TryWrite((message.Source, message.Text));
+		return _processor.Process(message);
+	}
+
+	public IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime)
+	{
+		return _dialog.ToArray().ToDialog(fromTime);
 	}
 }

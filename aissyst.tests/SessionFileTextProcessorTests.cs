@@ -1,4 +1,5 @@
 using aissyst.core;
+using aissyst.console;
 using aissyst.core.Processor;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,20 +11,20 @@ public sealed class SessionFileTextProcessorTests : IDisposable
 	private readonly string _directory = Path.Combine(Path.GetTempPath(), $"aissyst-transcripts-{Guid.NewGuid():N}");
 
 	[Fact]
-	public async Task SessionSavesSeparatePlainTextFilesOnlyAfterCompletionAndLogsText()
+	public async Task SessionSavesSeparatePlainTextFilesOnlyAfterCompletionWithoutPrintingFragments()
 	{
 		var logger = new TestLogger();
 		var processor = new SessionFileTextProcessor(_directory, logger);
 		await processor.InitializeAsync();
 		await processor.BeginSessionAsync();
 		var timestamp = DateTime.UtcNow;
-		await processor.ProcessAsync(timestamp.AddSeconds(1), AudioSourceType.Application, "Second\r\n fragment.\t");
-		await processor.ProcessAsync(timestamp, AudioSourceType.Microphone, "My\n words.");
-		await processor.ProcessAsync(timestamp, AudioSourceType.Application, " First   fragment. ");
-		await processor.ProcessAsync(timestamp, AudioSourceType.Application, "Same timestamp.");
-		await processor.ProcessAsync(timestamp, AudioSourceType.Microphone, " \t\r\n ");
+		processor.Process(new DialogMessage(timestamp.AddSeconds(1), AudioSourceType.Application, "Second\r\n fragment.\t"));
+		processor.Process(new DialogMessage(timestamp, AudioSourceType.Microphone, "My\n words."));
+		processor.Process(new DialogMessage(timestamp, AudioSourceType.Application, " First   fragment. "));
+		processor.Process(new DialogMessage(timestamp, AudioSourceType.Application, "Same timestamp."));
+		processor.Process(new DialogMessage(timestamp, AudioSourceType.Microphone, " \t\r\n "));
 		Assert.False(Directory.Exists(_directory));
-		Assert.Contains(logger.Messages, message => message.Contains("My words."));
+		Assert.DoesNotContain(logger.Messages, message => message.Contains("My words."));
 		await processor.CompleteSessionAsync();
 		var session = Assert.Single(Directory.GetDirectories(_directory));
 		Assert.Equal(2, Directory.GetFiles(session).Length);
@@ -41,7 +42,7 @@ public sealed class SessionFileTextProcessorTests : IDisposable
 		for (var index = 0; index < 2; index++)
 		{
 			await processor.BeginSessionAsync();
-			await processor.ProcessAsync(DateTime.UtcNow, AudioSourceType.Application, $"Session {index}");
+			processor.Process(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, $"Session {index}"));
 			await processor.CompleteSessionAsync();
 			await processor.CompleteSessionAsync();
 		}
@@ -64,7 +65,7 @@ public sealed class SessionFileTextProcessorTests : IDisposable
 		await processor.BeginSessionAsync();
 		var start = DateTime.UtcNow;
 		await Task.WhenAll(Enumerable.Range(0, 100).Select(index => Task.Run(() =>
-			processor.ProcessAsync(start.AddTicks(index), AudioSourceType.Application, $"word{index}"))));
+			processor.Process(new DialogMessage(start.AddTicks(index), AudioSourceType.Application, $"word{index}")))));
 		await processor.CompleteSessionAsync();
 		var session = Assert.Single(Directory.GetDirectories(_directory));
 		Assert.Equal(string.Join(" ", Enumerable.Range(0, 100).Select(index => $"word{index}")),

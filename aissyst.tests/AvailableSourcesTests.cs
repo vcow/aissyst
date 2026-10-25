@@ -4,6 +4,7 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.Output;
 using aissyst.core.LLMConnector;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
@@ -394,6 +395,7 @@ public class AvailableSourcesTests
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 		builder.Services.AddSingleton<ApplicationController>();
+		builder.Services.AddSingleton<IOutput, TestOutput>();
 		builder.Services.AddScoped<CaptureSessionContext>();
 		builder.Services.AddScoped<CaptureSession>();
 		builder.Services.AddSingleton<MainThreadWorker>();

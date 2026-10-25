@@ -93,9 +93,39 @@ public class ApplicationControllerTests
 		await controller.DisposeAsync();
 	}
 
+	[Fact]
+	public async Task OutputReceivesOnlyCompletedTurnsAndNoAutomaticLlmRequestsAreMade()
+	{
+		using var source = new TestCaptureSession();
+		var transcriber = new TestTranscriber { Recognize = (frames, _) => Task.FromResult($"Text {frames[0].Samples.Span[0]}") };
+		var output = new TestOutput();
+		var connector = new TestLLMConnector();
+		await using var controller = Create(source, transcriber, new TestTextProcessor(), output: output, connector: connector);
+		await controller.InitializeAsync();
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		source.Microphone.OnNext(Frames(1));
+		await controller.WaitForIdleAsync(timeout.Token);
+		source.Microphone.OnNext(Frames(2));
+		await controller.WaitForIdleAsync(timeout.Token);
+		Assert.Empty(output.Messages);
+		source.Application.OnNext(Frames(3));
+		await controller.WaitForIdleAsync(timeout.Token);
+		var message = Assert.Single(output.Messages);
+		Assert.Equal(AudioSourceType.Microphone, message.Source);
+		Assert.Equal("Text 1 Text 2", message.Text);
+		source.Application.OnNext(Frames(4));
+		await controller.WaitForIdleAsync(timeout.Token);
+		Assert.Single(output.Messages);
+		Assert.Empty(output.Answers);
+		Assert.Equal(0, connector.SessionInitializations);
+		Assert.Equal(0, connector.Requests);
+	}
+
 	private static ApplicationController Create(TestCaptureSession source, TestTranscriber transcriber,
-		TestTextProcessor processor, ApplicationSettings? settings = null) =>
-		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, new TestLLMConnector(), settings ?? new ApplicationSettings());
+		TestTextProcessor processor, ApplicationSettings? settings = null, TestOutput? output = null,
+		TestLLMConnector? connector = null) =>
+		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, connector ?? new TestLLMConnector(),
+			output ?? new TestOutput(), settings ?? new ApplicationSettings());
 
 	private static IReadOnlyList<AudioFrame> Frames(float value) =>
 		[new(new float[] { value }, new AudioFormat(16000, 1), TimeSpan.Zero)];

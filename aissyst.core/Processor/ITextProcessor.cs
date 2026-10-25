@@ -4,5 +4,6 @@ public interface ITextProcessor
 {
 	bool IsReady { get; }
 	Task InitializeAsync(CancellationToken cancellationToken = default);
-	Task ProcessAsync(DateTime timestamp, AudioSourceType source, string text, CancellationToken cancellationToken = default);
+	DialogMessage? Process(DialogMessage message);
+	IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime);
 }
