@@ -22,4 +22,5 @@ public interface IApplicationSettings
 	int TranscriptionQueueCapacity { get; }
 	int MaxTranscriptionProcessingCount { get; }
 	int MaxTextProcessingCount { get; }
+	bool UseMarkdownFormat { get; }
 }

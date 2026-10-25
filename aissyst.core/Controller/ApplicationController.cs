@@ -23,6 +23,7 @@ public class ApplicationController : IAsyncDisposable
 	private readonly SessionModel? _sessionModel;
 	private readonly IOutput _output;
 	private readonly IApplicationSettings _settings;
+	private readonly ISessionSelector _sessionSelector;
 
 	private readonly CompositeDisposable _disposables = new();
 
@@ -45,9 +46,10 @@ public class ApplicationController : IAsyncDisposable
 	private bool _isDisposed;
 	private Task? _disposeTask;
 
-	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor, ICaptureSession captureSession,
-		ILogger<ApplicationController> logger, ILLMConnector llmConnector, IOutput output,
-		IApplicationSettings settings, SessionModel? sessionModel = null)
+	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor,
+		ICaptureSession captureSession, ILogger<ApplicationController> logger, ILLMConnector llmConnector,
+		IOutput output, IApplicationSettings settings, ISessionSelector sessionSelector,
+		SessionModel? sessionModel = null)
 	{
 		_transcriber = transcriber;
 		_textProcessor = textProcessor;
@@ -57,6 +59,7 @@ public class ApplicationController : IAsyncDisposable
 		_sessionModel = sessionModel;
 		_output = output;
 		_settings = settings;
+		_sessionSelector = sessionSelector;
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
 
@@ -131,12 +134,16 @@ public class ApplicationController : IAsyncDisposable
 		using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
 		await RunTrackedAsync(() => _llmConnector.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _transcriber.InitializeAsync(cts.Token));
-		await RunTrackedAsync(() => _textProcessor.InitializeAsync(cts.Token));
-		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
+		await RunTrackedAsync(() => _sessionSelector.InitializeAsync(cts.Token));
 		if (_sessionModel != null)
 		{
 			await RunTrackedAsync(() => _sessionModel.InitializeAsync(cts.Token));
 		}
+		else
+		{
+			await RunTrackedAsync(() => _textProcessor.InitializeAsync(cts.Token));
+		}
+		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
 
 		var dialog = _textProcessor.GetDialog(DateTime.MinValue);
 		foreach (var message in dialog)

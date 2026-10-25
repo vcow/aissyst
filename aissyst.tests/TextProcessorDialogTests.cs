@@ -81,9 +81,11 @@ public sealed class TextProcessorDialogTests : IDisposable
 
 	private async Task<ITextProcessor> CreateAsync(bool useFiles)
 	{
+		var selector = new TestSessionSelector();
+		await selector.InitializeAsync();
 		ITextProcessor processor = useFiles
 			? new SessionFileTextProcessor(_directory, NullLogger<SessionFileTextProcessor>.Instance)
-			: new LoggingTextProcessor(NullLogger<LoggingTextProcessor>.Instance);
+			: new TextProcessor(selector, new TestSessionDatabase(), NullLogger<TextProcessor>.Instance);
 		await processor.InitializeAsync();
 		if (processor is SessionFileTextProcessor fileProcessor)
 		{

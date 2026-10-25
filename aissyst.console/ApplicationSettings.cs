@@ -15,6 +15,7 @@ public class ApplicationSettings : IApplicationSettings
 	public int TranscriptionQueueCapacity { get; }
 	public int MaxTranscriptionProcessingCount { get; }
 	public int MaxTextProcessingCount { get; }
+	public bool UseMarkdownFormat { get; }
 
 	public ApplicationSettings(TimeSpan? pauseUntilRecordingStops = null, float signalThreshold = 0.01f,
 		AudioSourceType availableSources = AudioSourceType.Both,
@@ -22,7 +23,7 @@ public class ApplicationSettings : IApplicationSettings
 		string transcriptionModelSha256 = "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
 		string transcriptionLanguage = "en", int transcriptionQueueCapacity = 10,
 		int maxTranscriptionProcessingCount = 1, int maxTextProcessingCount = 1,
-		TimeSpan? maxRecordingDuration = null)
+		TimeSpan? maxRecordingDuration = null, bool useMarkdownFormat = true)
 	{
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTranscriptionProcessingCount);
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTextProcessingCount);
@@ -61,5 +62,6 @@ public class ApplicationSettings : IApplicationSettings
 		SignalThreshold = signalThreshold;
 		MaxTranscriptionProcessingCount = maxTranscriptionProcessingCount;
 		MaxTextProcessingCount = maxTextProcessingCount;
+		UseMarkdownFormat = useMarkdownFormat;
 	}
 }

@@ -7,19 +7,21 @@ internal sealed class TestLLMConnector : ILLMConnector
 {
 	internal int SessionInitializations;
 	internal int Requests;
+	internal Func<Session, CancellationToken, Task<DialogResponse>>? Initialize;
 	public Task InitializeAsync(CancellationToken cancellationToken = default)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
 		return Task.CompletedTask;
 	}
 
-	public Task<DialogResponse> InitializeSession(Session session)
+	public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default)
 	{
 		Interlocked.Increment(ref SessionInitializations);
-		throw new InvalidOperationException("Unexpected LLM session initialization.");
+		return Initialize?.Invoke(session, cancellationToken)
+			?? throw new InvalidOperationException("Unexpected LLM session initialization.");
 	}
 
-	public Task<DialogResponse> SendRequest(DialogRequest request)
+	public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default)
 	{
 		Interlocked.Increment(ref Requests);
 		throw new InvalidOperationException("Unexpected LLM request.");

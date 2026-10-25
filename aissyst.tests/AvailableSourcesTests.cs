@@ -6,6 +6,7 @@ using aissyst.core.Audio;
 using aissyst.core.Controller;
 using aissyst.core.Output;
 using aissyst.core.LLMConnector;
+using aissyst.core.LLMConnector.Model;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
@@ -378,6 +379,8 @@ public class AvailableSourcesTests
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
 		builder.Services.AddSingleton<IApplicationSettings>(settings);
+		builder.Services.AddSingleton<TestSessionSelector>();
+		builder.Services.AddSingleton<ISessionSelector>(provider => provider.GetRequiredService<TestSessionSelector>());
 		builder.Services.AddSingleton(hotkeys ?? new ConsoleHotkeySettings());
 		builder.Services.AddSingleton<TestAudioCapture>();
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());

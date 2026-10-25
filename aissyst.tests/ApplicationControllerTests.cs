@@ -25,6 +25,7 @@ public class ApplicationControllerTests
 		Assert.Equal(2, transcriber.Requests.Count);
 		Assert.Equal(1, transcriber.Initializations);
 		Assert.True(source.Initialized);
+		Assert.Equal(1, processor.Selector.Calls);
 	}
 
 	[Theory]
@@ -125,7 +126,7 @@ public class ApplicationControllerTests
 		TestTextProcessor processor, ApplicationSettings? settings = null, TestOutput? output = null,
 		TestLLMConnector? connector = null) =>
 		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, connector ?? new TestLLMConnector(),
-			output ?? new TestOutput(), settings ?? new ApplicationSettings());
+			output ?? new TestOutput(), settings ?? new ApplicationSettings(), processor.Selector);
 
 	private static IReadOnlyList<AudioFrame> Frames(float value) =>
 		[new(new float[] { value }, new AudioFormat(16000, 1), TimeSpan.Zero)];

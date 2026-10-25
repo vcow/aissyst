@@ -38,17 +38,20 @@ internal sealed class TestTranscriber : ITranscriber
 
 internal sealed class TestTextProcessor : ITextProcessor
 {
-	private readonly LoggingTextProcessor _processor = new(Microsoft.Extensions.Logging.Abstractions.NullLogger<LoggingTextProcessor>.Instance);
+	internal readonly TestSessionSelector Selector;
+	private readonly TextProcessor _processor;
+	public TestTextProcessor(TestSessionSelector? selector = null)
+	{
+		Selector = selector ?? new TestSessionSelector();
+		_processor = new TextProcessor(Selector, new TestSessionDatabase(),
+			Microsoft.Extensions.Logging.Abstractions.NullLogger<TextProcessor>.Instance);
+	}
 	private readonly ConcurrentQueue<DialogMessage> _dialog = new();
 	internal Channel<(AudioSourceType Source, string Text)> Results { get; } =
 		Channel.CreateUnbounded<(AudioSourceType, string)>();
-	public bool IsReady { get; private set; }
+	public bool IsReady => _processor.IsReady;
 
-	public Task InitializeAsync(CancellationToken cancellationToken = default)
-	{
-		IsReady = true;
-		return _processor.InitializeAsync(cancellationToken);
-	}
+	public Task InitializeAsync(CancellationToken cancellationToken = default) => _processor.InitializeAsync(cancellationToken);
 
 	public DialogMessage? Process(DialogMessage message)
 	{

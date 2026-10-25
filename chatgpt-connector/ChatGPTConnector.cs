@@ -31,10 +31,10 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
 
-	public Task<DialogResponse> InitializeSession(Session session) =>
+	public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
 		Task.FromException<DialogResponse>(new NotSupportedException("LLM session initialization has not been implemented."));
 
-	public Task<DialogResponse> SendRequest(DialogRequest request) =>
+	public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
 		Task.FromException<DialogResponse>(new NotSupportedException("LLM requests have not been implemented."));
 
 	public ChatGPTConnector(HttpClient httpClient, IChatGPTAuthorization authorization,
