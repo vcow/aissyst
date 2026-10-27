@@ -183,7 +183,7 @@ public class SessionModel : IAsyncDisposable
 			var records = Msg2DTO(_textProcessor.GetDialog(_summaryTimestamp));
 			_latestRequestId = Interlocked.Increment(ref _requestId);
 			_pendingSummaryTimestamp = records.LastOrDefault()?.Timestamp;
-			return new DialogRequest { Id = _latestRequestId, Request = request, Summary = _summary, RawRecords = records };
+			return new DialogRequest { RequestId = _latestRequestId, Request = request, Summary = _summary, RawRecords = records };
 		}
 	}
 

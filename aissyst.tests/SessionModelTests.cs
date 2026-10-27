@@ -55,14 +55,14 @@ public sealed class SessionModelTests
 		processor.Process(new DialogMessage(timestamp, AudioSourceType.Application, "Question."));
 		var older = model.GetRequest(RequestType.Translate);
 		var newer = model.GetRequest(RequestType.Reply);
-		Assert.True(newer.Id > older.Id);
-		model.Reset(new DialogResponse { RequestId = older.Id, Summary = "Stale.", SummaryTimestamp = timestamp });
-		model.Reset(new DialogResponse { RequestId = newer.Id, Summary = "Accepted.", SummaryTimestamp = timestamp });
-		model.Reset(new DialogResponse { RequestId = newer.Id, Summary = "Duplicate.", SummaryTimestamp = timestamp });
+		Assert.True(newer.RequestId > older.RequestId);
+		model.Reset(new DialogResponse { RequestId = older.RequestId, Summary = "Stale.", SummaryTimestamp = timestamp });
+		model.Reset(new DialogResponse { RequestId = newer.RequestId, Summary = "Accepted.", SummaryTimestamp = timestamp });
+		model.Reset(new DialogResponse { RequestId = newer.RequestId, Summary = "Duplicate.", SummaryTimestamp = timestamp });
 		var emptyRequest = model.GetRequest(RequestType.Advice);
 		Assert.Equal("Accepted.", emptyRequest.Summary);
 		Assert.Empty(emptyRequest.RawRecords);
-		model.Reset(new DialogResponse { RequestId = emptyRequest.Id, Summary = "Updated without new dialog." });
+		model.Reset(new DialogResponse { RequestId = emptyRequest.RequestId, Summary = "Updated without new dialog." });
 		Assert.Empty(model.GetRequest(RequestType.Summary).RawRecords);
 	}
 
@@ -80,9 +80,9 @@ public sealed class SessionModelTests
 		processor.Process(new DialogMessage(timestamp.AddSeconds(1), AudioSourceType.Application, "Continuation."));
 		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse
 		{
-			RequestId = request.Id, Summary = "Invalid future boundary.", SummaryTimestamp = timestamp.AddSeconds(1)
+			RequestId = request.RequestId, Summary = "Invalid future boundary.", SummaryTimestamp = timestamp.AddSeconds(1)
 		}));
-		model.Reset(new DialogResponse { RequestId = request.Id, Summary = "First only.", SummaryTimestamp = timestamp });
+		model.Reset(new DialogResponse { RequestId = request.RequestId, Summary = "First only.", SummaryTimestamp = timestamp });
 		var next = model.GetRequest(RequestType.Reply);
 		Assert.Equal("First only.", next.Summary);
 		Assert.Equal("Continuation.", Assert.Single(next.RawRecords).Message);
@@ -141,7 +141,7 @@ public sealed class SessionModelTests
 		await using var model = Create(selector, database, processor, SuccessfulConnector());
 		await model.InitializeAsync();
 		var requests = await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => Task.Run(() => model.GetRequest(RequestType.Reply))));
-		Assert.Equal(100, requests.Select(request => request.Id).Distinct().Count());
+		Assert.Equal(100, requests.Select(request => request.RequestId).Distinct().Count());
 	}
 
 	[Fact]
@@ -154,8 +154,8 @@ public sealed class SessionModelTests
 		await using var model = Create(selector, database, processor, SuccessfulConnector());
 		await model.InitializeAsync();
 		var request = model.GetRequest(RequestType.Advice);
-		model.Reset(new DialogResponse { RequestId = request.Id, Error = "Temporary failure." });
-		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = request.Id }));
+		model.Reset(new DialogResponse { RequestId = request.RequestId, Error = "Temporary failure." });
+		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = request.RequestId }));
 		Assert.Equal("Initial summary.", model.GetRequest(RequestType.Reply).Summary);
 	}
 

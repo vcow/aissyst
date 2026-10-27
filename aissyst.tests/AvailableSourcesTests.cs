@@ -368,7 +368,7 @@ public class AvailableSourcesTests
 			received.Writer.TryWrite(request.Request);
 			return Task.FromResult(new DialogResponse
 			{
-				RequestId = request.Id, Summary = request.Summary,
+				RequestId = request.RequestId, Summary = request.Summary,
 				SummaryTimestamp = request.RawRecords.LastOrDefault()?.Timestamp,
 				Message = request.Request.ToString()
 			});

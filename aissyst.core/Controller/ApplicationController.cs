@@ -206,7 +206,7 @@ public class ApplicationController : IAsyncDisposable
 					_logger.LogError("LLM request failed: {Error}", result.Error);
 					return result;
 				}
-				if (result.RequestId != payload.Id)
+				if (result.RequestId != payload.RequestId)
 				{
 					throw new InvalidDataException("The LLM response does not match the assistance request.");
 				}

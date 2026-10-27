@@ -142,7 +142,7 @@ public class ApplicationControllerTests
 				// Simulate a provider that finishes after cancellation was requested.
 				return await release.Task;
 			}
-			return new DialogResponse { RequestId = request.Id, Summary = "Latest summary.", Message = "Latest answer." };
+			return new DialogResponse { RequestId = request.RequestId, Summary = "Latest summary.", Message = "Latest answer." };
 		};
 		var output = new TestOutput();
 		await using var model = new SessionModel(processor.Selector, new TestSessionDatabase(), processor,
@@ -158,7 +158,7 @@ public class ApplicationControllerTests
 			Assert.False(first.IsCompleted);
 			await controller.SendRequestAsync(RequestType.Reply, timeout.Token);
 			await cancelled.Task.WaitAsync(timeout.Token);
-			release.TrySetResult(new DialogResponse { RequestId = payload.Id, Summary = "Obsolete summary.", Message = "Obsolete answer." });
+			release.TrySetResult(new DialogResponse { RequestId = payload.RequestId, Summary = "Obsolete summary.", Message = "Obsolete answer." });
 			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
 			Assert.Equal("Latest answer.", Assert.Single(output.Answers));
 			Assert.Equal("Latest summary.", model.GetRequest(RequestType.Summary).Summary);

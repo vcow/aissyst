@@ -28,7 +28,7 @@ internal sealed class TestSessionSelector : ISessionSelector
 internal sealed class TestSessionDatabase : IDatabase
 {
 	internal readonly ConcurrentQueue<int> RequestedSessions = new();
-	internal SessionContext Session = new(new SessionInfo(7, 3, DateTime.UtcNow, "Test session"),
+	internal SessionContext Session = new(new SessionInfo(7, DateTime.UtcNow),
 		"Test preview", [new ContextRecord("Background", "Test context")], []);
 	internal Func<int, CancellationToken, Task<SessionContext>>? Load;
 
