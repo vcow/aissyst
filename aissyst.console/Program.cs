@@ -1,4 +1,6 @@
-﻿using aissyst.console;
+using aissyst.core.Database;
+using aissyst.sqlite;
+using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
@@ -36,6 +38,10 @@ IApplicationSettings settings = new ApplicationSettings(
 	maxTextProcessingCount: 1);
 
 builder.Services.AddSingleton(settings);
+var databasePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+	"aissyst", "aissyst.sqlite");
+builder.Services.AddSingleton<IDatabase>(_ => new SqliteDatabase(databasePath));
+builder.Services.AddSingleton<ISessionSelector, ConsoleSessionSelector>();
 builder.Services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });
 builder.Services.AddSingleton<ITranscriber, WhisperTranscriber>();
 builder.Services.AddSingleton(new ConsoleHotkeySettings(

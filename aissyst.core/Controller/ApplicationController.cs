@@ -135,9 +135,9 @@ public class ApplicationController : IAsyncDisposable
 		}
 
 		using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+		await RunTrackedAsync(() => _sessionSelector.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _llmConnector.InitializeAsync(cts.Token));
 		await RunTrackedAsync(() => _transcriber.InitializeAsync(cts.Token));
-		await RunTrackedAsync(() => _sessionSelector.InitializeAsync(cts.Token));
 		if (_sessionModel != null)
 		{
 			await RunTrackedAsync(() => _sessionModel.InitializeAsync(cts.Token));

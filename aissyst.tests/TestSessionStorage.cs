@@ -53,6 +53,12 @@ internal sealed class TestSessionDatabase : IDatabase
 		throw new InvalidOperationException("Unexpected session export.");
 	public Task<SessionInfo> ImportSessionAsync(string filePath, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected session import.");
+	public Task DeleteContextAsync(int contextId, CancellationToken cancellationToken = default) =>
+		throw new NotSupportedException();
+
+	public Task DeleteSessionAsync(int sessionId, CancellationToken cancellationToken = default) =>
+		throw new NotSupportedException();
+
 	public Task<string> GetSessionInitialInstructionsAsync(int sessionId, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected initial instructions load.");
 	public Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default) =>

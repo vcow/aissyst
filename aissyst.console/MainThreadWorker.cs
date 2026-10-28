@@ -87,8 +87,11 @@ public class MainThreadWorker : BackgroundService
 		{
 			// Console input and the active session stop with the host.
 		}
-		catch (Exception exception) when (exception is InvalidOperationException or PlatformNotSupportedException
-			or IOException or UnauthorizedAccessException)
+		catch (EndOfStreamException)
+		{
+			// Closing standard input ends the workflow without starting capture.
+		}
+		catch (Exception exception)
 		{
 			await Console.Error.WriteLineAsync($"Failed to run the console workflow: {exception.Message}");
 			Environment.ExitCode = 1;

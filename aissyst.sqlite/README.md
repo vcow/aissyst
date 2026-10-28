@@ -39,7 +39,7 @@ Timestamps are stored as UTC .NET ticks, preserving 100-nanosecond precision. Lo
 
 Audio source mapping is `Microphone` to `interviewee`, `Application` to `interviewer`, and `None` to `unknown`. A combined source is rejected for a single dialogue record.
 
-Create, append, replace, and import operations are transactional. Missing context or session IDs produce `KeyNotFoundException`. Invalid templates and exports produce `InvalidDataException`; malformed UTF-8 produces a decoding error. Storage failures propagate to the caller.
+Create, append, replace, delete, and import operations are transactional. `DeleteContextAsync` cascades to context blocks while preserving existing sessions. `DeleteSessionAsync` cascades to dialogue records. Missing context or session IDs produce `KeyNotFoundException`. Invalid templates and exports produce `InvalidDataException`; malformed UTF-8 produces a decoding error. Storage failures propagate to the caller.
 
 Operations on one instance are serialized. Separate instances use SQLite transactions and locking. WAL is enabled, and each operation opens and closes its own connection. Since Microsoft.Data.Sqlite performs database I/O synchronously, operations run on a thread-pool thread. Cancellation is checked before work, between records, and before commit; it does not interrupt an SQL statement already executing or undo a committed transaction.
 

@@ -129,6 +129,28 @@ public sealed class SqliteDatabase : IDatabase
 			}, cancellationToken);
 		}, true, cancellationToken);
 
+	public Task DeleteContextAsync(int contextId, CancellationToken cancellationToken = default) =>
+		RunAsync((connection, transaction) =>
+		{
+			using var command = Command(connection, transaction, "DELETE FROM contexts WHERE id = $id", ("$id", contextId));
+			if (command.ExecuteNonQuery() == 0)
+			{
+				throw new KeyNotFoundException($"Context {contextId} does not exist.");
+			}
+			return true;
+		}, true, cancellationToken);
+
+	public Task DeleteSessionAsync(int sessionId, CancellationToken cancellationToken = default) =>
+		RunAsync((connection, transaction) =>
+		{
+			using var command = Command(connection, transaction, "DELETE FROM sessions WHERE id = $id", ("$id", sessionId));
+			if (command.ExecuteNonQuery() == 0)
+			{
+				throw MissingSession(sessionId);
+			}
+			return true;
+		}, true, cancellationToken);
+
 	public Task<SessionContext> GetSessionAsync(int sessionId, CancellationToken cancellationToken = default) =>
 		RunAsync((connection, transaction) =>
 		{

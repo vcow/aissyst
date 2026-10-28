@@ -22,6 +22,55 @@ public sealed class SqliteDatabaseTests : IDisposable
 	}
 
 	[Fact]
+	public async Task DeleteContextCascadesBlocksAndPreservesSessionSnapshot()
+	{
+		var context = await _database.CreateContextAsync(Template());
+		var session = await _database.CreateSessionAsync(context.Id);
+		await _database.DeleteContextAsync(context.Id);
+		Assert.Empty(await _database.GetContextsAsync());
+		Assert.Equal(2, (await _database.GetSessionAsync(session.Id)).Context.Count);
+		Assert.Equal("Agent instructions", await _database.GetSessionInitialInstructionsAsync(session.Id));
+		using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
+		connection.Open();
+		using var command = connection.CreateCommand();
+		command.CommandText = "SELECT COUNT(*) FROM context_blocks";
+		Assert.Equal(0L, command.ExecuteScalar());
+		await Assert.ThrowsAsync<KeyNotFoundException>(() => _database.DeleteContextAsync(context.Id));
+	}
+
+	[Fact]
+	public async Task DeleteSessionCascadesDialogAndPreservesOtherData()
+	{
+		var context = await _database.CreateContextAsync(Template());
+		var session = await _database.CreateSessionAsync(context.Id);
+		var other = await _database.CreateSessionAsync(context.Id);
+		await _database.AddSessionDialogRecordAsync(session.Id, new DialogMessage(DateTime.UtcNow, AudioSourceType.Microphone, "Hello"));
+		await _database.DeleteSessionAsync(session.Id);
+		Assert.Equal(other.Id, Assert.Single(await _database.GetSessionsAsync()).Id);
+		Assert.Single(await _database.GetContextsAsync());
+		await Assert.ThrowsAsync<KeyNotFoundException>(() => _database.GetSessionAsync(session.Id));
+		await Assert.ThrowsAsync<KeyNotFoundException>(() => _database.DeleteSessionAsync(session.Id));
+		using var connection = new SqliteConnection($"Data Source={_path};Pooling=False");
+		connection.Open();
+		using var command = connection.CreateCommand();
+		command.CommandText = "SELECT COUNT(*) FROM dialog_records";
+		Assert.Equal(0L, command.ExecuteScalar());
+	}
+
+	[Fact]
+	public async Task CancelledDeletesPreserveData()
+	{
+		var context = await _database.CreateContextAsync(Template());
+		var session = await _database.CreateSessionAsync(context.Id);
+		using var cancellation = new CancellationTokenSource();
+		cancellation.Cancel();
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _database.DeleteContextAsync(context.Id, cancellation.Token));
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _database.DeleteSessionAsync(session.Id, cancellation.Token));
+		Assert.Single(await _database.GetContextsAsync());
+		Assert.Single(await _database.GetSessionsAsync());
+	}
+
+	[Fact]
 	public async Task TemplateImportPreservesTextAndIgnoresAncillaryFiles()
 	{
 		var template = Template();

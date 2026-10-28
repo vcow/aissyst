@@ -111,6 +111,8 @@ An imported session receives a new identifier in the destination database. Expor
 | --- | --- |
 | `GetContextsAsync` | List available contexts. |
 | `CreateContextAsync` | Create a context from a template ZIP and an optional name. |
+| `DeleteContextAsync` | Delete a context and its blocks; existing sessions remain unchanged. |
+| `DeleteSessionAsync` | Delete a session and all its dialogue records. |
 | `GetSessionsAsync` | List existing sessions. |
 | `CreateSessionAsync` | Create a session with a private copy of the selected context. |
 | `GetSessionAsync` | Load session metadata, preview, thematic blocks, and dialogue. |
@@ -119,3 +121,5 @@ An imported session receives a new identifier in the destination database. Expor
 | `SetSessionDialogAsync` | Replace the complete session dialogue. |
 | `ExportSessionAsync` | Export a self-contained session. |
 | `ImportSessionAsync` | Import a session under a new local identifier. |
+
+Deletion is transactional. Missing context or session IDs produce `KeyNotFoundException`.
