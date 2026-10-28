@@ -17,6 +17,7 @@ public class SessionModel : IAsyncDisposable
 	private readonly CancellationTokenSource _shutdown = new();
 	private Task? _initialization;
 	private Task? _disposal;
+	private Func<CancellationToken, Task>? _restoreDialog;
 	private string _preview = string.Empty;
 	private string _summary = string.Empty;
 	private DateTime _summaryTimestamp = DateTime.MinValue;
@@ -25,7 +26,7 @@ public class SessionModel : IAsyncDisposable
 	private static int _requestId;
 	private int _latestRequestId;
 	private int _lastAppliedRequestId;
-	private DateTime? _pendingSummaryTimestamp;
+	private readonly Dictionary<int, DateTime?> _pendingSummaryTimestamps = [];
 
 	public SessionModel(ISessionSelector sessionSelector, IDatabase database, ITextProcessor textProcessor,
 		ILLMConnector llmConnector, IApplicationSettings settings, ILogger<SessionModel> logger)
@@ -76,7 +77,7 @@ public class SessionModel : IAsyncDisposable
 			if (_llmConnector is ILLMSessionLifecycle lifecycle)
 			{
 				var instructions = await _database.GetSessionInitialInstructionsAsync(sessionId, token);
-				lifecycle.ConfigureSession(instructions, GetSession, AcceptRecovery, Reset);
+				lifecycle.ConfigureSession(instructions, RestoreSessionAsync, AcceptRecovery, Reset);
 			}
 			var response = await _llmConnector.InitializeSession(session, token);
 			if (!string.IsNullOrWhiteSpace(response.Error))
@@ -111,7 +112,7 @@ public class SessionModel : IAsyncDisposable
 		lock (_sync)
 		{
 			EnsureReady();
-			if (response.RequestId != _latestRequestId || response.RequestId <= _lastAppliedRequestId)
+			if (response.RequestId <= _lastAppliedRequestId || !_pendingSummaryTimestamps.ContainsKey(response.RequestId))
 			{
 				_logger.LogDebug("Ignored an obsolete or duplicate LLM response for request {RequestId}.", response.RequestId);
 				return false;
@@ -121,7 +122,7 @@ public class SessionModel : IAsyncDisposable
 				_logger.LogError("LLM request failed: {Error}", response.Error);
 				return false;
 			}
-			ValidateSummary(response, _pendingSummaryTimestamp);
+			ValidateSummary(response, _pendingSummaryTimestamps[response.RequestId]);
 			if (_summary.Length != 0 && string.IsNullOrWhiteSpace(response.Summary))
 			{
 				throw new InvalidDataException("The LLM response cannot erase an existing dialog summary.");
@@ -130,8 +131,48 @@ public class SessionModel : IAsyncDisposable
 			// An empty raw_records list does not reset the confirmed dialog boundary.
 			_summaryTimestamp = response.SummaryTimestamp ?? _summaryTimestamp;
 			_lastAppliedRequestId = response.RequestId;
+			foreach (var id in _pendingSummaryTimestamps.Keys.Where(id => id <= response.RequestId).ToArray())
+			{
+				_pendingSummaryTimestamps.Remove(id);
+			}
 			return true;
 		}
+	}
+
+	public bool IsCurrentResponse(int requestId)
+	{
+		lock (_sync)
+		{
+			return requestId == _lastAppliedRequestId;
+		}
+	}
+
+	public void CompleteRequest(int requestId)
+	{
+		lock (_sync)
+		{
+			_pendingSummaryTimestamps.Remove(requestId);
+		}
+	}
+
+	internal void ConfigureDialogRestoration(Func<CancellationToken, Task> restoreDialog)
+	{
+		_restoreDialog = restoreDialog;
+	}
+
+	private async Task<Session> RestoreSessionAsync(CancellationToken cancellationToken)
+	{
+		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+		if (_restoreDialog != null)
+		{
+			await _restoreDialog(linked.Token);
+		}
+		else if (_textProcessor is IReloadableTextProcessor reloadable)
+		{
+			await reloadable.ReloadAsync(linked.Token);
+		}
+		linked.Token.ThrowIfCancellationRequested();
+		return GetSession();
 	}
 
 	private void AcceptRecovery(Session session, DialogResponse response)
@@ -145,7 +186,7 @@ public class SessionModel : IAsyncDisposable
 			// Requests prepared before recovery must not overwrite the reconstructed state.
 			_latestRequestId = Interlocked.Increment(ref _requestId);
 			_lastAppliedRequestId = _latestRequestId;
-			_pendingSummaryTimestamp = null;
+			_pendingSummaryTimestamps.Clear();
 		}
 	}
 
@@ -203,7 +244,7 @@ public class SessionModel : IAsyncDisposable
 			}
 			var records = Msg2DTO(_textProcessor.GetDialog(_summaryTimestamp));
 			_latestRequestId = Interlocked.Increment(ref _requestId);
-			_pendingSummaryTimestamp = records.LastOrDefault()?.Timestamp;
+			_pendingSummaryTimestamps[_latestRequestId] = records.LastOrDefault()?.Timestamp;
 			return new DialogRequest { RequestId = _latestRequestId, Request = request, Summary = _summary, RawRecords = records };
 		}
 	}

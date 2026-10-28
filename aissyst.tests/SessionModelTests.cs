@@ -174,7 +174,9 @@ public sealed class SessionModelTests
 		var first = DateTime.UtcNow;
 		processor.Process(new DialogMessage(first, AudioSourceType.Application, "First"));
 		var obsolete = model.GetRequest(RequestType.Reply);
-		var snapshot = connector.GetSession!();
+		database.Session = database.Session with { Dialog = [new DialogRecord(first, "interviewer", "Database replacement")] };
+		var snapshot = await connector.GetSession!(default);
+		Assert.Equal("Database replacement", Assert.Single(snapshot.Dialog).Message);
 		processor.Process(new DialogMessage(first.AddSeconds(1), AudioSourceType.Application, "Later"));
 		connector.AcceptRecovery!(snapshot, new DialogResponse { Summary = "Rebuilt summary", SummaryTimestamp = first });
 		Assert.False(connector.AcceptResponse!(new DialogResponse { RequestId = obsolete.RequestId, Summary = "Old", SummaryTimestamp = first }));
@@ -188,10 +190,10 @@ public sealed class SessionModelTests
 	private sealed class LifecycleConnector : ILLMConnector, ILLMSessionLifecycle
 	{
 		internal string? Instructions;
-		internal Func<Session>? GetSession;
+		internal Func<CancellationToken, Task<Session>>? GetSession;
 		internal Action<Session, DialogResponse>? AcceptRecovery;
 		internal Func<DialogResponse, bool>? AcceptResponse;
-		public void ConfigureSession(string instructions, Func<Session> getSession,
+		public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
 			Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse)
 		{
 			Instructions = instructions;
@@ -204,6 +206,29 @@ public sealed class SessionModelTests
 			Task.FromResult(new DialogResponse());
 		public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
 			throw new NotSupportedException();
+	}
+
+	[Fact]
+	public async Task OlderValidResponseIsAcceptedWhileNewerRequestIsPendingOrFailed()
+	{
+		var database = new TestSessionDatabase();
+		var selector = new TestSessionSelector();
+		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
+		await using var model = Create(selector, database, processor, SuccessfulConnector());
+		await model.InitializeAsync();
+		var firstTime = DateTime.UtcNow;
+		await processor.ProcessAsync(new DialogMessage(firstTime, AudioSourceType.Application, "First"));
+		var first = model.GetRequest(RequestType.Advice);
+		await processor.ProcessAsync(new DialogMessage(firstTime.AddSeconds(1), AudioSourceType.Microphone, "Second"));
+		var second = model.GetRequest(RequestType.Reply);
+		Assert.False(model.Reset(new DialogResponse { RequestId = second.RequestId, Error = "Failed" }));
+		Assert.True(model.Reset(new DialogResponse { RequestId = first.RequestId, Summary = "First summary", SummaryTimestamp = firstTime }));
+		var next = model.GetRequest(RequestType.Translate);
+		Assert.Equal("First summary", next.Summary);
+		Assert.Equal("Second", Assert.Single(next.RawRecords).Message);
+		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = second.RequestId, Summary = "Bad", SummaryTimestamp = firstTime }));
+		Assert.True(model.Reset(new DialogResponse { RequestId = second.RequestId, Summary = "Both", SummaryTimestamp = firstTime.AddSeconds(1) }));
+		Assert.False(model.Reset(new DialogResponse { RequestId = first.RequestId, Summary = "Old", SummaryTimestamp = firstTime }));
 	}
 
 	private static TestLLMConnector SuccessfulConnector() => new()

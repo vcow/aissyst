@@ -21,11 +21,11 @@ internal static class ResponsesProtocol
 		 "required":["request_id","error","summary","summary_ts","message"],"additionalProperties":false}
 		""").RootElement.Clone();
 
-	internal static string Create(string model, string role, string text, string? previousId, bool generate)
+	internal static string Create(string model, string role, string text, string? previousId, bool generate, string streamId = "interview")
 	{
 		var body = new Dictionary<string, object?>
 		{
-			["type"] = "response.create", ["stream_id"] = "interview", ["model"] = model, ["store"] = false,
+			["type"] = "response.create", ["stream_id"] = streamId, ["model"] = model, ["store"] = false,
 			["input"] = new[] { new { type = "message", role, content = new[] { new { type = "input_text", text } } } }
 		};
 		if (previousId != null)

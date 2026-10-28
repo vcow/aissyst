@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using aissyst.core.Database;
+using aissyst.core;
 using aissyst.core.LLMConnector.Model;
 using aissyst.core.Processor;
 
@@ -31,6 +32,7 @@ internal sealed class TestSessionDatabase : IDatabase
 	internal SessionContext Session = new(new SessionInfo(7, DateTime.UtcNow),
 		"Test preview", [new ContextRecord("Background", "Test context")], []);
 	internal Func<int, CancellationToken, Task<SessionContext>>? Load;
+	internal Func<DialogMessage, CancellationToken, Task>? BeforeAppend;
 
 	public Task<SessionContext> GetSessionAsync(int sessionId, CancellationToken cancellationToken = default)
 	{
@@ -48,7 +50,29 @@ internal sealed class TestSessionDatabase : IDatabase
 	public Task<ContextInfo> CreateContextAsync(string contextTemplatePath, string? contextName = null, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected context creation.");
 	public Task AddSessionDialogRecordAsync(int sessionId, DialogMessage message, CancellationToken cancellationToken = default) =>
-		throw new InvalidOperationException("Unexpected dialog append.");
+		AddSessionMultipleDialogRecordsAsync(sessionId, [message], cancellationToken);
+
+	public async Task AddSessionMultipleDialogRecordsAsync(int sessionId, IReadOnlyList<DialogMessage> messages, CancellationToken cancellationToken = default)
+	{
+		var records = new List<DialogRecord>();
+		foreach (var message in messages)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (BeforeAppend != null)
+			{
+				await BeforeAppend(message, cancellationToken);
+			}
+			var role = message.Source switch
+			{
+				AudioSourceType.Microphone => "interviewee",
+				AudioSourceType.Application => "interviewer",
+				_ => "unknown"
+			};
+			records.Add(new DialogRecord(message.Timestamp, role, message.Text));
+		}
+		Session = Session with { Dialog = Session.Dialog.Concat(records).ToArray() };
+	}
+
 	public Task ExportSessionAsync(int sessionId, string filePath, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected session export.");
 	public Task<SessionInfo> ImportSessionAsync(string filePath, CancellationToken cancellationToken = default) =>

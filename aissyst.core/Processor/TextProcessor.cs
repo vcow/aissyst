@@ -5,14 +5,16 @@ using Microsoft.Extensions.Logging;
 
 namespace aissyst.core.Processor;
 
-public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
+public sealed class TextProcessor : IReloadableTextProcessor, IAsyncDisposable
 {
 	private readonly ISessionSelector _sessionSelector;
 	private readonly IDatabase _database;
 	private readonly ILogger<TextProcessor> _logger;
 	private readonly Lock _sync = new();
+	private readonly SemaphoreSlim _storageGate = new(1, 1);
 	private readonly CancellationTokenSource _shutdown = new();
 	private ImmutableList<DialogMessage> _dialog = [];
+	private readonly List<DialogMessage> _unsaved = [];
 	private DialogMessage? _pendingMessage;
 	private Task? _initialization;
 	private Task? _disposal;
@@ -57,21 +59,35 @@ public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
 		}
 	}
 
+	public async Task ReloadAsync(CancellationToken cancellationToken = default)
+	{
+		lock (_sync)
+		{
+			ObjectDisposedException.ThrowIf(_disposal != null, this);
+			if (!_isReady)
+			{
+				throw new InvalidOperationException("The text processor has not been initialized.");
+			}
+		}
+		await LoadDialogAsync(cancellationToken).ConfigureAwait(false);
+	}
+
 	private async Task LoadDialogAsync(CancellationToken cancellationToken)
 	{
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
 		var token = linked.Token;
+		await _storageGate.WaitAsync(token).ConfigureAwait(false);
 		try
 		{
 			var selectedId = _sessionSelector.GetSelectedSessionId();
-			var session = await _database.GetSessionAsync(selectedId, token);
+			var session = await _database.GetSessionAsync(selectedId, token).ConfigureAwait(false);
 			var dialog = session.Dialog.OrderBy(record => record.Timestamp).Select(record => new DialogMessage(
 				record.Timestamp, record.Role?.Trim().ToLowerInvariant() switch
 				{
 					"interviewer" => AudioSourceType.Application,
 					"interviewee" => AudioSourceType.Microphone,
 					_ => AudioSourceType.None
-				}, record.Message)).ToImmutableList();
+				}, record.Message)).Concat(_unsaved).OrderBy(message => message.Timestamp).ToImmutableList();
 			lock (_sync)
 			{
 				token.ThrowIfCancellationRequested();
@@ -92,9 +108,82 @@ public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
 			_logger.LogError(exception, "Failed to initialize the text processor.");
 			throw;
 		}
+		finally
+		{
+			_storageGate.Release();
+		}
 	}
 
-	public DialogMessage? Process(DialogMessage message)
+	public DialogMessage? Process(DialogMessage message) => ProcessAsync(message).GetAwaiter().GetResult();
+
+	public async Task<DialogMessage?> ProcessAsync(DialogMessage message, CancellationToken cancellationToken = default)
+	{
+		lock (_sync)
+		{
+			ObjectDisposedException.ThrowIf(_disposal != null, this);
+			if (!_isReady)
+			{
+				throw new InvalidOperationException("The text processor has not been initialized.");
+			}
+		}
+		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+		await _storageGate.WaitAsync(linked.Token).ConfigureAwait(false);
+		try
+		{
+			int sessionId;
+			lock (_sync)
+			{
+				ObjectDisposedException.ThrowIf(_disposal != null, this);
+				if (!_isReady)
+				{
+					throw new InvalidOperationException("The text processor has not been initialized.");
+				}
+				sessionId = _sessionSelector.GetSelectedSessionId();
+			}
+			var fragment = message with
+			{
+				Timestamp = message.Timestamp.Kind == DateTimeKind.Local
+					? message.Timestamp.ToUniversalTime()
+					: DateTime.SpecifyKind(message.Timestamp, DateTimeKind.Utc)
+			};
+			_unsaved.Add(fragment);
+			var completed = ProcessCore(fragment);
+			await TryFlushAsync(sessionId, linked.Token).ConfigureAwait(false);
+			return completed;
+		}
+		catch (OperationCanceledException) when (linked.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "Failed to save or process a dialog fragment.");
+			throw;
+		}
+		finally
+		{
+			_storageGate.Release();
+		}
+	}
+
+	private async Task TryFlushAsync(int sessionId, CancellationToken cancellationToken)
+	{
+		if (_unsaved.Count == 0)
+		{
+			return;
+		}
+		try
+		{
+			await _database.AddSessionMultipleDialogRecordsAsync(sessionId, _unsaved.ToArray(), cancellationToken).ConfigureAwait(false);
+			_unsaved.Clear();
+		}
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "Failed to save {Count} dialog fragments. They remain in memory for the next save attempt.", _unsaved.Count);
+		}
+	}
+
+	private DialogMessage? ProcessCore(DialogMessage message)
 	{
 		lock (_sync)
 		{
@@ -106,6 +195,7 @@ public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
 
 			if (string.IsNullOrWhiteSpace(message.Text))
 			{
+				_dialog = _dialog.Add(message);
 				return null;
 			}
 
@@ -121,7 +211,7 @@ public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
 				_pendingMessage = normalized;
 			}
 
-			_dialog = _dialog.Add(normalized);
+			_dialog = _dialog.Add(message);
 			if (completed != null)
 			{
 				_logger.LogDebug("Completed a dialog message from {Source}.", completed.Source);
@@ -161,7 +251,21 @@ public sealed class TextProcessor : ITextProcessor, IAsyncDisposable
 		}
 		finally
 		{
-			_shutdown.Dispose();
+			// Wait until an in-flight save or reload has released the storage gate.
+			await _storageGate.WaitAsync().ConfigureAwait(false);
+			try
+			{
+				using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+				if (_unsaved.Count > 0)
+				{
+					await TryFlushAsync(_sessionSelector.GetSelectedSessionId(), timeout.Token).ConfigureAwait(false);
+				}
+			}
+			finally
+			{
+				_storageGate.Release();
+				_shutdown.Dispose();
+			}
 		}
 	}
 }

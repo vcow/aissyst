@@ -33,7 +33,8 @@ public class ApplicationController : IAsyncDisposable
 	private readonly CancellationToken _stoppingToken;
 
 	private readonly Lock _trackedTasksLock = new();
-	private readonly Lock _textProcessingLock = new();
+	private readonly Lock _outputSync = new();
+	private readonly SemaphoreSlim _textProcessingLock = new(1, 1);
 	private ImmutableHashSet<Task> _trackedTasks = new HashSet<Task>().ToImmutableHashSet();
 	private ImmutableHashSet<Task> _trackedRequestTasks = ImmutableHashSet<Task>.Empty;
 
@@ -47,7 +48,6 @@ public class ApplicationController : IAsyncDisposable
 
 	private bool _isDisposed;
 	private Task? _disposeTask;
-	private CancellationTokenSource? _requestCancellation;
 
 	public ApplicationController(ITranscriber transcriber, ITextProcessor textProcessor,
 		ICaptureSession captureSession, ILogger<ApplicationController> logger, ILLMConnector llmConnector,
@@ -63,6 +63,7 @@ public class ApplicationController : IAsyncDisposable
 		_output = output;
 		_settings = settings;
 		_sessionSelector = sessionSelector;
+		_sessionModel?.ConfigureDialogRestoration(RestoreDialogAsync);
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
 
@@ -78,12 +79,12 @@ public class ApplicationController : IAsyncDisposable
 
 		_captureSession.MicrophoneRecordObservable
 			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Microphone, frames), tracked: true))
+				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Microphone, frames), tracked: true))
 			.AddTo(_observableHandlers);
 
 		_captureSession.ApplicationRecordingObservable
 			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.Now, AudioSourceType.Application, frames), tracked: true))
+				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Application, frames), tracked: true))
 			.AddTo(_observableHandlers);
 	}
 
@@ -149,10 +150,35 @@ public class ApplicationController : IAsyncDisposable
 
 		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
 
-		var dialog = _textProcessor.GetDialog(DateTime.MinValue);
-		foreach (var message in dialog)
+		PrintDialogHistory();
+	}
+
+	private void PrintDialogHistory()
+	{
+		lock (_outputSync)
 		{
-			_output.PrintDialogMessage(message);
+			var dialog = _textProcessor.GetDialog(DateTime.MinValue);
+			_output.Clear();
+			_output.PrintMultipleDialogMessages(dialog);
+		}
+	}
+
+	private async Task RestoreDialogAsync(CancellationToken cancellationToken)
+	{
+		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stoppingToken);
+		await _textProcessingLock.WaitAsync(linked.Token);
+		try
+		{
+			if (_textProcessor is IReloadableTextProcessor reloadable)
+			{
+				await reloadable.ReloadAsync(linked.Token);
+			}
+			linked.Token.ThrowIfCancellationRequested();
+			PrintDialogHistory();
+		}
+		finally
+		{
+			_textProcessingLock.Release();
 		}
 	}
 
@@ -166,12 +192,9 @@ public class ApplicationController : IAsyncDisposable
 			{
 				ObjectDisposedException.ThrowIf(_isDisposed, this);
 				cancellationToken.ThrowIfCancellationRequested();
-				var previous = _requestCancellation;
 				var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_stoppingToken, cancellationToken);
 				requestToken = cancellation.Token;
-				_requestCancellation = cancellation;
-				var previousCancellation = previous?.CancelAsync() ?? Task.CompletedTask;
-				operation = SendRequestCoreAsync(request, previousCancellation, cancellation);
+				operation = SendRequestCoreAsync(request, cancellation);
 				_ = RunTrackedAsync(() => ObserveRequestCompletionAsync(operation), isRequest: true);
 			}
 			return await operation;
@@ -187,16 +210,16 @@ public class ApplicationController : IAsyncDisposable
 		}
 	}
 
-	private async Task<DialogResponse> SendRequestCoreAsync(RequestType request, Task previousCancellation,
+	private async Task<DialogResponse> SendRequestCoreAsync(RequestType request,
 		CancellationTokenSource cancellation)
 	{
+		DialogRequest? payload = null;
 		try
 		{
-			await previousCancellation;
 			var cancellationToken = cancellation.Token;
 			cancellationToken.ThrowIfCancellationRequested();
 			var model = _sessionModel ?? throw new InvalidOperationException("The session model is not configured.");
-			var payload = model.GetRequest(request);
+			payload = model.GetRequest(request);
 			var result = await _llmConnector.SendRequest(payload, cancellationToken);
 			lock (_trackedTasksLock)
 			{
@@ -210,25 +233,28 @@ public class ApplicationController : IAsyncDisposable
 				{
 					throw new InvalidDataException("The LLM response does not match the assistance request.");
 				}
-				if (_llmConnector is not ILLMSessionLifecycle)
+				var accepted = _llmConnector is ILLMSessionLifecycle
+					? model.IsCurrentResponse(result.RequestId)
+					: model.Reset(result);
+				if (!accepted)
 				{
-					model.Reset(result);
+					return result;
 				}
 				if (!string.IsNullOrWhiteSpace(result.Message))
 				{
-					_output.PrintLLMAnswer(result.Message);
+					lock (_outputSync)
+					{
+						_output.PrintLLMAnswer(result.Message);
+					}
 				}
 				return result;
 			}
 		}
 		finally
 		{
-			lock (_trackedTasksLock)
+			if (payload != null)
 			{
-				if (ReferenceEquals(_requestCancellation, cancellation))
-				{
-					_requestCancellation = null;
-				}
+				_sessionModel!.CompleteRequest(payload.RequestId);
 			}
 			cancellation.Dispose();
 		}
@@ -432,7 +458,11 @@ public class ApplicationController : IAsyncDisposable
 				_logger.LogWarning("Text queue is full. Removed 1 oldest pending transcription.");
 			}
 
-			_textRecordsQueue.Add(message);
+			if (!_textRecordsQueue.Add(message))
+			{
+				_logger.LogWarning("A pending transcription with timestamp {Timestamp:O} already exists. The incoming transcription from {Source} was not queued.",
+					message.Timestamp, message.Source);
+			}
 		}
 		finally
 		{
@@ -519,19 +549,27 @@ public class ApplicationController : IAsyncDisposable
 		await ProcessTextImmediate(message);
 	}
 
-	private Task ProcessTextImmediate(DialogMessage message)
+	private async Task ProcessTextImmediate(DialogMessage message)
 	{
 		Debug.Assert(_textProcessorSemaphore.CurrentCount < _settings.MaxTextProcessingCount);
 
 		try
 		{
-			lock (_textProcessingLock)
+			await _textProcessingLock.WaitAsync(_stoppingToken);
+			try
 			{
-				var output = _textProcessor.Process(message);
+				var output = await _textProcessor.ProcessAsync(message, _stoppingToken);
 				if (output != null)
 				{
-					_output.PrintDialogMessage(output);
+					lock (_outputSync)
+					{
+						_output.PrintDialogMessage(output);
+					}
 				}
+			}
+			finally
+			{
+				_textProcessingLock.Release();
 			}
 		}
 		catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
@@ -546,7 +584,5 @@ public class ApplicationController : IAsyncDisposable
 			_textProcessorSemaphore.Release();
 			_ = RunBackgroundAsync(() => DequeText(false), tracked: true);
 		}
-
-		return Task.CompletedTask;
 	}
 }

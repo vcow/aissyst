@@ -178,6 +178,23 @@ public sealed class SqliteDatabase : IDatabase
 		}, true, cancellationToken);
 	}
 
+	public Task AddSessionMultipleDialogRecordsAsync(int sessionId, IReadOnlyList<DialogMessage> messages,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(messages);
+		var records = messages.Select(ToRecord).ToArray();
+		return RunAsync((connection, transaction) =>
+		{
+			RequireSession(connection, transaction, sessionId);
+			foreach (var record in records)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				InsertRecord(connection, transaction, sessionId, record);
+			}
+			return true;
+		}, true, cancellationToken);
+	}
+
 	public Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(dialog);

@@ -22,6 +22,25 @@ public sealed class SqliteDatabaseTests : IDisposable
 	}
 
 	[Fact]
+	public async Task BatchAppendRollsBackAllRecordsOnFailureAndRetainsDuplicatesOnRetry()
+	{
+		var session = await Session();
+		var original = new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Original");
+		await _database.AddSessionDialogRecordAsync(session.Id, original);
+		Execute("CREATE TRIGGER fail_batch BEFORE INSERT ON dialog_records WHEN NEW.message='fail' BEGIN SELECT RAISE(ABORT, 'Test failure'); END;");
+		DialogMessage[] batch = [original with { Text = "same" }, original with { Text = "same" }, original with { Text = "fail" }];
+		await Assert.ThrowsAsync<SqliteException>(() => _database.AddSessionMultipleDialogRecordsAsync(session.Id, batch));
+		Assert.Equal("Original", Assert.Single((await _database.GetSessionAsync(session.Id)).Dialog).Message);
+		Execute("DROP TRIGGER fail_batch");
+		await _database.AddSessionMultipleDialogRecordsAsync(session.Id, batch);
+		Assert.Equal(new[] { "Original", "same", "same", "fail" }, (await _database.GetSessionAsync(session.Id)).Dialog.Select(record => record.Message));
+		using var cancellation = new CancellationTokenSource();
+		cancellation.Cancel();
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _database.AddSessionMultipleDialogRecordsAsync(session.Id, batch, cancellation.Token));
+		Assert.Equal(4, (await _database.GetSessionAsync(session.Id)).Dialog.Count);
+	}
+
+	[Fact]
 	public async Task DeleteContextCascadesBlocksAndPreservesSessionSnapshot()
 	{
 		var context = await _database.CreateContextAsync(Template());

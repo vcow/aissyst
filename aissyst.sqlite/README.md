@@ -62,3 +62,5 @@ Local database IDs are omitted. Import assigns a new destination-local ID; its n
 Export reads a consistent database snapshot, writes a temporary file beside the destination, and replaces the destination only after writing finishes. The destination directory must exist. Import deserializes and checks the version and required values before starting the write transaction. Invalid files or failed inserts cannot leave a partially imported session.
 
 Session exports are distinct from user-authored template ZIPs; the two formats are not interchangeable.
+
+`AddSessionMultipleDialogRecordsAsync` appends a batch in one transaction. An insertion failure or cancellation before commit rolls back the entire batch; identical timestamps and identical fragments are retained. The single-record append remains available.

@@ -2,6 +2,9 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
+using aissyst.core.Processor;
+using aissyst.core.Database;
+using aissyst.core.LLMConnector;
 using aissyst.core.LLMConnector.DTO;
 using aissyst.core.LLMConnector.Model;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -125,7 +128,7 @@ public class ApplicationControllerTests
 	}
 
 	[Fact]
-	public async Task NewAssistanceCancelsPreviousRequestAndIgnoresItsLateResponse()
+	public async Task NewAssistanceDoesNotCancelPreviousRequestAndIgnoresItsOlderResponse()
 	{
 		using var source = new TestCaptureSession();
 		var processor = new TestTextProcessor();
@@ -157,9 +160,9 @@ public class ApplicationControllerTests
 			await controller.WaitForIdleAsync(timeout.Token);
 			Assert.False(first.IsCompleted);
 			await controller.SendRequestAsync(RequestType.Reply, timeout.Token);
-			await cancelled.Task.WaitAsync(timeout.Token);
+			Assert.False(cancelled.Task.IsCompleted);
 			release.TrySetResult(new DialogResponse { RequestId = payload.RequestId, Summary = "Obsolete summary.", Message = "Obsolete answer." });
-			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+			await first;
 			Assert.Equal("Latest answer.", Assert.Single(output.Answers));
 			Assert.Equal("Latest summary.", model.GetRequest(RequestType.Summary).Summary);
 		}
@@ -167,6 +170,95 @@ public class ApplicationControllerTests
 		{
 			release.TrySetResult(new DialogResponse());
 		}
+	}
+
+	[Fact]
+	public async Task WaitForIdleIncludesSavingOriginalTranscription()
+	{
+		using var source = new TestCaptureSession();
+		var selector = new TestSessionSelector();
+		var database = new TestSessionDatabase();
+		await using var processor = new TextProcessor(selector, database, NullLogger<TextProcessor>.Instance);
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		database.BeforeAppend = async (_, token) => { entered.SetResult(); await release.Task.WaitAsync(token); };
+		var transcriber = new TestTranscriber { Recognize = (_, _) => Task.FromResult("  Original\nfragment  ") };
+		await using var controller = new ApplicationController(transcriber, processor, source,
+			NullLogger<ApplicationController>.Instance, new TestLLMConnector(), new TestOutput(),
+			new ApplicationSettings(), selector);
+		await controller.InitializeAsync();
+		source.Microphone.OnNext(Frames(1));
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		var idle = controller.WaitForIdleAsync();
+		Assert.False(idle.IsCompleted);
+		release.SetResult();
+		await idle.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal("  Original\nfragment  ", Assert.Single(database.Session.Dialog).Message);
+		Assert.Equal("Original\nfragment", Assert.Single(processor.GetDialog(DateTime.MinValue)).Text);
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task RecoveryRedrawsStoredAndPendingDialogWithoutDuplicates(bool failedSave)
+	{
+		using var source = new TestCaptureSession();
+		var selector = new TestSessionSelector();
+		var database = new TestSessionDatabase();
+		database.Session = database.Session with { Dialog = [new DialogRecord(DateTime.UtcNow.AddMinutes(-1), "interviewer", "Stored")] };
+		await using var processor = new TextProcessor(selector, database, NullLogger<TextProcessor>.Instance);
+		var connector = new RecoveryConnector();
+		var output = new TestOutput();
+		await using var model = new SessionModel(selector, database, processor, connector,
+			new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+		await using var controller = new ApplicationController(new TestTranscriber { Recognize = (frames, _) => Task.FromResult($"Text {frames[0].Samples.Span[0]}") },
+			processor, source, NullLogger<ApplicationController>.Instance, connector, output, new ApplicationSettings(), selector, model);
+		await controller.InitializeAsync();
+		Assert.Equal("Stored", Assert.Single(output.Messages).Text);
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		database.BeforeAppend = async (_, token) =>
+		{
+			entered.TrySetResult();
+			await release.Task.WaitAsync(token);
+			if (failedSave)
+			{
+				throw new IOException("Offline");
+			}
+		};
+		source.Microphone.OnNext(Frames(1));
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		var recovery = connector.Restore!(default);
+		Assert.False(recovery.IsCompleted);
+		release.SetResult();
+		var restored = await recovery.WaitAsync(TimeSpan.FromSeconds(5));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Stored", "Text 1" }, output.Messages.Select(message => message.Text));
+		Assert.Equal(2, output.ClearCalls);
+		Assert.Equal(2, output.BatchCalls);
+		Assert.Equal(2, restored.Dialog.Count);
+		if (failedSave)
+		{
+			Assert.Single(database.Session.Dialog);
+		}
+		database.BeforeAppend = null;
+		source.Application.OnNext(Frames(2));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		source.Microphone.OnNext(Frames(3));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Stored", "Text 1", "Text 2" }, output.Messages.Select(message => message.Text));
+	}
+
+	private sealed class RecoveryConnector : ILLMConnector, ILLMSessionLifecycle
+	{
+		internal Func<CancellationToken, Task<Session>>? Restore;
+		public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
+			Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse) => Restore = getSession;
+		public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+		public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
+			Task.FromResult(new DialogResponse { Summary = "Initial", SummaryTimestamp = session.Dialog.LastOrDefault()?.Timestamp });
+		public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
+			throw new NotSupportedException();
 	}
 
 	private static ApplicationController Create(TestCaptureSession source, TestTranscriber transcriber,

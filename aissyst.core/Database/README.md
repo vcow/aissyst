@@ -118,6 +118,7 @@ An imported session receives a new identifier in the destination database. Expor
 | `GetSessionAsync` | Load session metadata, preview, thematic blocks, and dialogue. |
 | `GetSessionInitialInstructionsAsync` | Load the session's own initial agent instructions. |
 | `AddSessionDialogRecordAsync` | Append a transcribed dialogue fragment. |
+| `AddSessionMultipleDialogRecordsAsync` | Atomically append a batch of original fragments. |
 | `SetSessionDialogAsync` | Replace the complete session dialogue. |
 | `ExportSessionAsync` | Export a self-contained session. |
 | `ImportSessionAsync` | Import a session under a new local identifier. |

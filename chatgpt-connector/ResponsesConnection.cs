@@ -9,8 +9,6 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private readonly Func<CancellationToken, Task<string>> _getToken;
 	private readonly Func<IResponsesSocket> _createSocket;
 	private readonly string _model;
-	private readonly Func<DateTimeOffset> _tokenExpiry;
-	private DateTimeOffset _renewAt;
 	private Exception? _connectionFault;
 	private readonly ChatGPTConnectorOptions _options;
 	private readonly ILogger _logger;
@@ -19,14 +17,22 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private readonly Lock _sync = new();
 	private IResponsesSocket? _socket;
 	private Task? _reader;
-	private Task? _maintenance;
 	private Task? _recovery;
 	private Task? _disposal;
-	private TaskCompletionSource<JsonElement>? _pending;
-	private string? _activeResponseId;
+	private sealed class SendTimeoutException() : TimeoutException("Timed out sending a Responses API request.");
+	private sealed class Pending(string? parentStream)
+	{
+		internal readonly TaskCompletionSource<JsonElement> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		internal readonly string? ParentStream = parentStream;
+		internal string? ResponseId;
+	}
+	private readonly Dictionary<string, Pending> _pending = [];
+	private readonly HashSet<Task> _requests = [];
+	private readonly SemaphoreSlim _requestSlots = new(15, 15);
+	private string _confirmedStream = "interview";
 	private string? _confirmedResponseId;
 	private string? _instructions;
-	private Func<Session>? _getSession;
+	private Func<CancellationToken, Task<Session>>? _getSession;
 	private Action<Session, DialogResponse>? _acceptRecovery;
 	private Func<DialogResponse, bool>? _acceptResponse;
 	private bool _initialized;
@@ -34,17 +40,16 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private Exception? _unavailable;
 
 	internal ResponsesConnection(string model, Func<CancellationToken, Task<string>> getToken,
-		ChatGPTConnectorOptions options, ILogger logger, Func<IResponsesSocket>? createSocket = null, Func<DateTimeOffset>? tokenExpiry = null)
+		ChatGPTConnectorOptions options, ILogger logger, Func<IResponsesSocket>? createSocket = null)
 	{
 		_model = model;
-		_tokenExpiry = tokenExpiry ?? (() => DateTimeOffset.MaxValue);
 		_getToken = getToken;
 		_options = options;
 		_logger = logger;
 		_createSocket = createSocket ?? (() => new ResponsesSocket());
 	}
 
-	internal void Configure(string instructions, Func<Session> getSession,
+	internal void Configure(string instructions, Func<CancellationToken, Task<Session>> getSession,
 		Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(instructions);
@@ -79,7 +84,6 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 					ScheduleRecovery(_connectionFault);
 				}
 			}
-			_maintenance = MaintainAsync();
 			_logger.LogInformation("The LLM session is ready.");
 			return result;
 		}
@@ -110,41 +114,73 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			connection = _socket;
 		}
 		var operation = SendCoreAsync(snapshot, connection, cancellationToken);
-		_ = ObserveAsync(operation);
+		lock (_sync)
+		{
+			_requests.Add(operation);
+		}
+		_ = ObserveRequestAsync(operation);
 		return operation.WaitAsync(cancellationToken);
 	}
 
 	private async Task<DialogResponse> SendCoreAsync(DialogRequest request, IResponsesSocket? connection, CancellationToken cancellationToken)
 	{
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-		await _operations.WaitAsync(linked.Token);
+		if (!await _requestSlots.WaitAsync(_options.ResponseTimeout, linked.Token))
+		{
+			throw new TimeoutException("All Responses request slots are busy.");
+		}
+		string? lane = null;
+		Pending? pending = null;
 		try
 		{
-			lock (_sync)
+			await _operations.WaitAsync(linked.Token);
+			try
 			{
-				ObjectDisposedException.ThrowIf(_disposal != null, this);
-				if (!_initialized || _recovering || _unavailable != null || !ReferenceEquals(connection, _socket))
+				string? parent;
+				lock (_sync)
 				{
-					throw new InvalidOperationException("The LLM connection is not ready. Retry after recovery.");
+					ObjectDisposedException.ThrowIf(_disposal != null, this);
+					if (!_initialized || _recovering || _unavailable != null || !ReferenceEquals(connection, _socket))
+					{
+						throw new InvalidOperationException("The LLM connection is not ready. Retry after recovery.");
+					}
+					// Keep confirmed and referenced parent lanes intact while forks are in flight.
+					lane = Enumerable.Range(0, 31).Select(index => "request_" + index).First(candidate =>
+						candidate != _confirmedStream && !_pending.ContainsKey(candidate)
+						&& !_pending.Values.Any(value => value.ParentStream == candidate));
+					parent = _confirmedResponseId;
+					pending = new Pending(_confirmedStream);
+					_pending.Add(lane, pending);
+				}
+				using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+				timeout.CancelAfter(_options.ResponseTimeout);
+				try
+				{
+					await connection!.SendAsync(ResponsesProtocol.Create(_model, "user", JsonSerializer.Serialize(request), parent, true, lane), timeout.Token);
+				}
+				catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested)
+				{
+					throw new SendTimeoutException();
 				}
 			}
-			cancellationToken.ThrowIfCancellationRequested();
-			var response = await ExchangeAsync("user", JsonSerializer.Serialize(request), _confirmedResponseId, true, _shutdown.Token);
+			finally
+			{
+				_operations.Release();
+			}
+			var response = await pending!.Completion.Task.WaitAsync(_options.ResponseTimeout, _shutdown.Token);
 			var result = ResponsesProtocol.Parse(response, request.RequestId,
 				request.RawRecords.LastOrDefault()?.Timestamp, request.Summary, false);
 			cancellationToken.ThrowIfCancellationRequested();
-			if (string.IsNullOrWhiteSpace(result.Error))
+			lock (_sync)
 			{
-				if (!_shutdown.IsCancellationRequested && _acceptResponse!(result))
+				if (!_shutdown.IsCancellationRequested && !_recovering && ReferenceEquals(connection, _socket)
+					&& string.IsNullOrWhiteSpace(result.Error) && _acceptResponse!(result))
 				{
 					_confirmedResponseId = response.GetProperty("id").GetString();
-				}
-				else
-				{
-					throw new OperationCanceledException("The LLM response belongs to an obsolete request.");
+					_confirmedStream = lane!;
 				}
 			}
-			else
+			if (!string.IsNullOrWhiteSpace(result.Error))
 			{
 				_logger.LogError("The model reported an error for request {RequestId}.", request.RequestId);
 			}
@@ -156,8 +192,9 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			{
 				_logger.LogError("LLM request {RequestId} failed ({Reason}).", request.RequestId, Describe(exception));
 			}
-			// An unaccepted completed response can evict the confirmed cache entry. Recovery replays real dialog.
-			if (!_shutdown.IsCancellationRequested && exception is not InvalidOperationException)
+			if (!_shutdown.IsCancellationRequested && (exception is SendTimeoutException
+				|| exception is ResponsesApiException { Code: "previous_response_not_found" } or ResponsesApiException { IsAuthorizationError: true }
+				|| (exception is IOException && exception is not (InvalidDataException or ResponsesApiException))))
 			{
 				ScheduleRecovery(exception);
 			}
@@ -165,8 +202,49 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		}
 		finally
 		{
-			_operations.Release();
+			if (lane != null && pending != null && !pending.Completion.Task.IsCompleted && !_shutdown.IsCancellationRequested)
+			{
+				// A timed-out response can still produce events. Reserve its lane until it ends.
+				var drain = DrainAsync(lane, pending);
+				lock (_sync)
+				{
+					_requests.Add(drain);
+				}
+				_ = ObserveRequestAsync(drain);
+			}
+			else
+			{
+				ReleaseRequest(lane, pending);
+			}
 		}
+	}
+
+	private async Task DrainAsync(string lane, Pending pending)
+	{
+		try
+		{
+			await pending.Completion.Task.WaitAsync(_shutdown.Token);
+		}
+		catch (Exception)
+		{
+			// The request already failed. Its late result must not be applied.
+		}
+		finally
+		{
+			ReleaseRequest(lane, pending);
+		}
+	}
+
+	private void ReleaseRequest(string? lane, Pending? pending)
+	{
+		lock (_sync)
+		{
+			if (lane != null && _pending.TryGetValue(lane, out var current) && ReferenceEquals(current, pending))
+			{
+				_pending.Remove(lane);
+			}
+		}
+		_requestSlots.Release();
 	}
 
 	private async Task ConnectAsync(CancellationToken cancellationToken)
@@ -182,11 +260,8 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			timeout.CancelAfter(_options.ConnectionTimeout);
 			await socket.ConnectAsync(await _getToken(timeout.Token), timeout.Token);
-			var lifetime = _tokenExpiry() - DateTimeOffset.UtcNow - TimeSpan.FromMinutes(1);
-			lifetime = lifetime < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : lifetime;
 			lock (_sync)
 			{
-				_renewAt = DateTimeOffset.UtcNow + (lifetime < _options.ConnectionLifetime ? lifetime : _options.ConnectionLifetime);
 				_socket = socket;
 				_connectionFault = null;
 			}
@@ -212,26 +287,26 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			throw new InvalidDataException("The model rejected session initialization.");
 		}
 		_confirmedResponseId = response.GetProperty("id").GetString();
+		_confirmedStream = "interview";
 		return result;
 	}
 
 	private async Task<JsonElement> ExchangeAsync(string role, string text, string? previousId, bool generate,
 		CancellationToken cancellationToken)
 	{
-		var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var pending = new Pending(null);
 		IResponsesSocket socket;
 		lock (_sync)
 		{
 			socket = _socket ?? throw new IOException("The Responses WebSocket is disconnected.");
-			_pending = completion;
-			_activeResponseId = null;
+			_pending.Add("interview", pending);
 		}
 		try
 		{
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			timeout.CancelAfter(_options.ResponseTimeout);
 			await socket.SendAsync(ResponsesProtocol.Create(_model, role, text, previousId, generate), timeout.Token);
-			return await completion.Task.WaitAsync(timeout.Token);
+			return await pending.Completion.Task.WaitAsync(timeout.Token);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 		{
@@ -241,9 +316,9 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			lock (_sync)
 			{
-				if (ReferenceEquals(_pending, completion))
+				if (_pending.TryGetValue("interview", out var current) && ReferenceEquals(current, pending))
 				{
-					_pending = null;
+					_pending.Remove("interview");
 				}
 			}
 		}
@@ -258,16 +333,14 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 				using var document = JsonDocument.Parse(await socket.ReceiveAsync(_shutdown.Token));
 				var item = document.RootElement;
 				var type = item.GetProperty("type").GetString();
-				if (item.TryGetProperty("stream_id", out var lane) && lane.GetString() != "interview")
-				{
-					continue;
-				}
+				var lane = item.TryGetProperty("stream_id", out var stream) ? stream.GetString() : null;
 				lock (_sync)
 				{
 					if (!ReferenceEquals(_socket, socket))
 					{
 						return;
 					}
+					var pending = lane != null ? _pending.GetValueOrDefault(lane) : null;
 					if (type == "error")
 					{
 						var error = item.GetProperty("error");
@@ -276,9 +349,9 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 						var exception = new ResponsesApiException(code,
 							item.TryGetProperty("status", out var status) && status.TryGetInt32(out var statusValue) ? statusValue : null);
 						_logger.LogError("Responses API rejected an operation ({Code}).", code);
-						if (_pending != null)
+						if (pending != null)
 						{
-							_pending.TrySetException(exception);
+							pending.Completion.TrySetException(exception);
 						}
 						else
 						{
@@ -286,7 +359,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 						}
 						continue;
 					}
-					if (!item.TryGetProperty("response", out var response))
+					if (pending == null || !item.TryGetProperty("response", out var response))
 					{
 						continue;
 					}
@@ -295,22 +368,22 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 					{
 						throw new InvalidDataException("The Responses API returned an empty response ID.");
 					}
-					if (_activeResponseId != null && _activeResponseId != id)
+					if (pending.ResponseId != null && pending.ResponseId != id)
 					{
 						throw new InvalidDataException("The Responses API returned an unexpected response ID.");
 					}
-					_activeResponseId = id;
+					pending.ResponseId = id;
 					if (type == "response.completed")
 					{
 						if (response.GetProperty("status").GetString() != "completed")
 						{
 							throw new InvalidDataException("The response did not complete successfully.");
 						}
-						_pending?.TrySetResult(response.Clone());
+						pending.Completion.TrySetResult(response.Clone());
 					}
 					else if (type is "response.failed" or "response.incomplete")
 					{
-						_pending?.TrySetException(new InvalidDataException($"Responses API event: {type}."));
+						pending.Completion.TrySetException(new InvalidDataException($"Responses API event: {type}."));
 					}
 				}
 			}
@@ -324,7 +397,10 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 					return;
 				}
 				_connectionFault = exception;
-				_pending?.TrySetException(exception);
+				foreach (var pending in _pending.Values)
+				{
+					pending.Completion.TrySetException(exception);
+				}
 				if (!_shutdown.IsCancellationRequested)
 				{
 					_logger.LogWarning("The Responses connection was interrupted ({Reason}). Recovering; the interrupted request will not be retried.", Describe(exception));
@@ -364,7 +440,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 					{
 						await Task.Delay(_options.ReconnectDelay, _shutdown.Token);
 						await ConnectAsync(_shutdown.Token);
-						var session = _getSession!();
+						var session = await _getSession!(_shutdown.Token);
 						var response = await InitializeChainAsync(session, _shutdown.Token);
 						lock (_sync)
 						{
@@ -411,26 +487,6 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		}
 	}
 
-	private async Task MaintainAsync()
-	{
-		try
-		{
-			while (!_shutdown.IsCancellationRequested)
-			{
-				TimeSpan delay;
-				lock (_sync)
-				{
-					delay = _renewAt - DateTimeOffset.UtcNow;
-				}
-				await Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.FromSeconds(1), _shutdown.Token);
-				ScheduleRecovery(new IOException("The connection or access token must be renewed."));
-			}
-		}
-		catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
-		{
-		}
-	}
-
 	private static string Describe(Exception exception) => exception switch
 	{
 		JsonException => "The server returned invalid JSON",
@@ -438,7 +494,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		_ => exception.GetType().Name
 	};
 
-	private static async Task ObserveAsync(Task operation)
+	private async Task ObserveRequestAsync(Task operation)
 	{
 		try
 		{
@@ -448,6 +504,13 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			// SendCoreAsync logs failures even when the caller has already stopped waiting.
 		}
+		finally
+		{
+			lock (_sync)
+			{
+				_requests.Remove(operation);
+			}
+		}
 	}
 
 	private void Disconnect()
@@ -456,6 +519,11 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			var socket = _socket;
 			_socket = null;
+			foreach (var pending in _pending.Values)
+			{
+				pending.Completion.TrySetException(new IOException("The Responses WebSocket is disconnected."));
+			}
+			_pending.Clear();
 			socket?.Dispose();
 		}
 	}
@@ -472,10 +540,6 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	{
 		await _shutdown.CancelAsync();
 		Disconnect();
-		if (_maintenance != null)
-		{
-			await _maintenance;
-		}
 		if (_recovery != null)
 		{
 			await _recovery;
@@ -486,5 +550,18 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		}
 		await _operations.WaitAsync();
 		_operations.Release();
+		Task[] requests;
+		lock (_sync)
+		{
+			requests = _requests.ToArray();
+		}
+		try
+		{
+			await Task.WhenAll(requests);
+		}
+		catch (Exception)
+		{
+			// Individual requests already report failures to their callers and the logger.
+		}
 	}
 }

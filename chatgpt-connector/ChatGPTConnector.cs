@@ -35,7 +35,7 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
 
-	public void ConfigureSession(string instructions, Func<Session> getSession,
+	public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
 		Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse) =>
 		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
 			.Configure(instructions, getSession, acceptRecovery, acceptResponse);
@@ -65,7 +65,6 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.LoginTimeout, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ConnectionTimeout, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ResponseTimeout, TimeSpan.Zero);
-		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ConnectionLifetime, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectDelay, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectAttempts, 1);
 		_modelSelector = modelSelector;
@@ -154,8 +153,7 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 			{
 				throw new InvalidOperationException("The selected model is not available for this account.");
 			}
-			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger,
-				tokenExpiry: () => _credentials!.Profile!.ExpiresAt);
+			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger);
 		}
 	}
 

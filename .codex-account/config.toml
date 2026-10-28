@@ -1,6 +1,8 @@
 # This file is shared through Git. Keep credentials in the ignored local state.
 cli_auth_credentials_store = "file"
 forced_login_method = "chatgpt"
+model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
 
 [tui]
 screen_reader_detection_done = true

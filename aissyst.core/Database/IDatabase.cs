@@ -13,6 +13,7 @@ public interface IDatabase
 	Task<SessionContext> GetSessionAsync(int sessionId, CancellationToken cancellationToken = default);
 	Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default);
 	Task AddSessionDialogRecordAsync(int sessionId, DialogMessage message, CancellationToken cancellationToken = default);
+	Task AddSessionMultipleDialogRecordsAsync(int sessionId, IReadOnlyList<DialogMessage> messages, CancellationToken cancellationToken = default);
 	Task ExportSessionAsync(int sessionId, string filePath, CancellationToken cancellationToken = default);
 	Task<SessionInfo> ImportSessionAsync(string filePath, CancellationToken cancellationToken = default);
 	Task<string> GetSessionInitialInstructionsAsync(int sessionId, CancellationToken cancellationToken = default);
