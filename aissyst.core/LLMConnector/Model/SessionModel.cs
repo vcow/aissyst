@@ -73,6 +73,11 @@ public class SessionModel : IAsyncDisposable
 				Dialog = Msg2DTO(_textProcessor.GetDialog(DateTime.MinValue)),
 				UseMdFormat = _settings.UseMarkdownFormat
 			};
+			if (_llmConnector is ILLMSessionLifecycle lifecycle)
+			{
+				var instructions = await _database.GetSessionInitialInstructionsAsync(sessionId, token);
+				lifecycle.ConfigureSession(instructions, GetSession, AcceptRecovery, Reset);
+			}
 			var response = await _llmConnector.InitializeSession(session, token);
 			if (!string.IsNullOrWhiteSpace(response.Error))
 			{
@@ -101,7 +106,7 @@ public class SessionModel : IAsyncDisposable
 		}
 	}
 
-	public void Reset(DialogResponse response)
+	public bool Reset(DialogResponse response)
 	{
 		lock (_sync)
 		{
@@ -109,12 +114,12 @@ public class SessionModel : IAsyncDisposable
 			if (response.RequestId != _latestRequestId || response.RequestId <= _lastAppliedRequestId)
 			{
 				_logger.LogDebug("Ignored an obsolete or duplicate LLM response for request {RequestId}.", response.RequestId);
-				return;
+				return false;
 			}
 			if (!string.IsNullOrWhiteSpace(response.Error))
 			{
 				_logger.LogError("LLM request failed: {Error}", response.Error);
-				return;
+				return false;
 			}
 			ValidateSummary(response, _pendingSummaryTimestamp);
 			if (_summary.Length != 0 && string.IsNullOrWhiteSpace(response.Summary))
@@ -125,6 +130,22 @@ public class SessionModel : IAsyncDisposable
 			// An empty raw_records list does not reset the confirmed dialog boundary.
 			_summaryTimestamp = response.SummaryTimestamp ?? _summaryTimestamp;
 			_lastAppliedRequestId = response.RequestId;
+			return true;
+		}
+	}
+
+	private void AcceptRecovery(Session session, DialogResponse response)
+	{
+		lock (_sync)
+		{
+			EnsureReady();
+			ValidateSummary(response, session.Dialog.LastOrDefault()?.Timestamp);
+			_summary = response.Summary;
+			_summaryTimestamp = response.SummaryTimestamp ?? DateTime.MinValue;
+			// Requests prepared before recovery must not overwrite the reconstructed state.
+			_latestRequestId = Interlocked.Increment(ref _requestId);
+			_lastAppliedRequestId = _latestRequestId;
+			_pendingSummaryTimestamp = null;
 		}
 	}
 

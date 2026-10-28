@@ -55,6 +55,7 @@ builder.Services.AddSingleton<ITextProcessor, TextProcessor>();
 builder.Services.AddSingleton<IOutput, ConsoleOutput>();
 builder.Services.AddSingleton(new ChatGPTConnectorOptions());
 builder.Services.AddSingleton<IChatGPTAuthorization, LoopbackChatGPTAuthorization>();
+builder.Services.AddSingleton<IModelSelector, ConsoleModelSelector>();
 builder.Services.AddSingleton<ILLMConnector, ChatGPTConnector>();
 builder.Services.AddSingleton<SessionModel>();
 builder.Services.AddSingleton<ApplicationController>();

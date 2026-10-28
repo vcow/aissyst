@@ -60,7 +60,7 @@ internal sealed class TestSessionDatabase : IDatabase
 		throw new NotSupportedException();
 
 	public Task<string> GetSessionInitialInstructionsAsync(int sessionId, CancellationToken cancellationToken = default) =>
-		throw new InvalidOperationException("Unexpected initial instructions load.");
+		Task.FromResult("Test initial instructions");
 	public Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected dialog save.");
 }

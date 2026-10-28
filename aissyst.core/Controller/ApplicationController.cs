@@ -210,7 +210,10 @@ public class ApplicationController : IAsyncDisposable
 				{
 					throw new InvalidDataException("The LLM response does not match the assistance request.");
 				}
-				model.Reset(result);
+				if (_llmConnector is not ILLMSessionLifecycle)
+				{
+					model.Reset(result);
+				}
 				if (!string.IsNullOrWhiteSpace(result.Message))
 				{
 					_output.PrintLLMAnswer(result.Message);

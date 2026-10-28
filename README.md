@@ -47,13 +47,13 @@ See [Database operation and context template authoring](aissyst.core/Database/RE
 
 The project is under active development. macOS audio capture, local transcription, dialogue processing, and assistance request orchestration are implemented.
 
-Sign in with ChatGPT has been implemented and verified. Actual LLM session initialization and inference requests are not yet implemented. The planned interaction uses a WebSocket connection.
+Sign in with ChatGPT has been implemented and verified. The [ChatGPT connector](chatgpt-connector/README.md) now implements Responses API WebSocket initialization, account-specific model selection, JSON requests and responses, cancellation, token renewal, and connection recovery. The transport has automated tests with synthetic server events; real-account inference compatibility has not yet been verified.
 
 SQLite storage is implemented in [aissyst.sqlite](aissyst.sqlite/README.md) and registered in the console application. At startup, select an existing session or choose `Create New`, then select a context or `Create from Template`. After selecting a session, choose `(o)open`, `(n)return to list`, or `(d)delete`. After selecting a context, choose `(c)create new session`, `(n)return to list`, or `(d)delete`. Deletion requires typing the exact word `delete`; any other response returns to the refreshed list. Deleting a context preserves existing sessions; deleting a session removes its dialogue. Empty lists advance directly to the next step. Importing a template immediately creates and selects a session. Invalid menu numbers are retried; template or database failures end the application with a nonzero exit code. Closing standard input or pressing Ctrl+C stops startup.
 
 The database is stored at `Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "aissyst", "aissyst.sqlite")`, independent of the working directory. Template paths may contain spaces and may be enclosed in single or double quotes. The context name defaults to the archive filename. If session creation fails after a successful context import, the imported context remains available on the next launch.
 
-Session selection happens before ChatGPT authorization and Whisper initialization. The complete workflow still requires implementation of LLM session initialization and inference requests.
+Session selection happens before ChatGPT authorization, model selection, and Whisper initialization. Live transcript persistence is not connected yet: recovery currently uses the complete in-memory history, including records loaded from the database at startup. New fragments do not survive an application restart until database writes are integrated.
 
 ## Working with a separate Codex account
 

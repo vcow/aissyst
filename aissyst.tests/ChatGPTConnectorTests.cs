@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using chatgpt_connector;
+using aissyst.core.LLMConnector;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
@@ -180,7 +181,29 @@ public sealed class ChatGPTConnectorTests : IDisposable
 		Assert.Equal(new ChatGPTAuthorizationCode("valid", "oaiapp_test", redirect), await login);
 	}
 
-	private ChatGPTConnector Create(HttpClient client, IChatGPTAuthorization? authorization = null)
+	[Fact]
+	public async Task InitializationPassesAccountCatalogToModelSelector()
+	{
+		using var client = CreateClient();
+		var selector = new TestModelSelector();
+		await using var connector = Create(client, modelSelector: selector);
+		await connector.InitializeAsync();
+		Assert.Equal(new[] { "model-a", "model-b" }, selector.Models.Select(model => model.Id));
+		Assert.Equal("model-b", selector.GetSelectedModel().Id);
+	}
+
+	private sealed class TestModelSelector : IModelSelector
+	{
+		internal IReadOnlyList<LLMModel> Models = [];
+		public Task InitializeAsync(IReadOnlyList<LLMModel> models, CancellationToken cancellationToken = default)
+		{
+			Models = models;
+			return Task.CompletedTask;
+		}
+		public LLMModel GetSelectedModel() => Models.Last();
+	}
+
+	private ChatGPTConnector Create(HttpClient client, IChatGPTAuthorization? authorization = null, IModelSelector? modelSelector = null)
 	{
 		var configuration = new OpenIdConnectConfiguration { Issuer = "https://auth.openai.com" };
 		configuration.SigningKeys.Add(new RsaSecurityKey(_rsa) { KeyId = "test-key" });
@@ -190,11 +213,22 @@ public sealed class ChatGPTConnectorTests : IDisposable
 			_authorizationParameters = new Dictionary<string, string>(parameters);
 			return Task.FromResult(new ChatGPTAuthorizationCode("test-code", "oaiapp_test", "http://127.0.0.1:12345/auth/callback"));
 		}), new ChatGPTConnectorOptions { StorageDirectory = _directory }, NullLogger<ChatGPTConnector>.Instance,
-			new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration));
+			new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration), modelSelector);
 	}
 
 	private HttpClient CreateClient() => new(new TestHandler(async request =>
 	{
+		if (request.RequestUri?.AbsoluteUri == "https://api.openai.com/v1/models")
+		{
+			Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+			Assert.Equal("access-token", request.Headers.Authorization?.Parameter);
+			return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { models = new[]
+			{
+				new { slug = "model-a", display_name = "Model A", visibility = "list" },
+				new { slug = "hidden", display_name = "Hidden", visibility = "hidden" },
+				new { slug = "model-b", display_name = "Model B", visibility = "list" }
+			} }) };
+		}
 		Assert.Equal("https://auth.openai.com/api/accounts/oauth/token", request.RequestUri?.AbsoluteUri);
 		var fields = ParseForm(await request.Content!.ReadAsStringAsync());
 		_tokenRequests.Add(fields);

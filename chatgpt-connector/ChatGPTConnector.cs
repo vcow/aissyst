@@ -12,7 +12,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace chatgpt_connector;
 
-public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
+public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsyncDisposable
 {
 	private const string Issuer = "https://auth.openai.com";
 	private const string Resource = "https://api.openai.com/v1";
@@ -29,29 +29,46 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 	private FileStream? _sessionLock;
 	private ChatGPTAccount? _account;
 
+	private readonly IModelSelector? _modelSelector;
+	private ChatGPTCredentials? _credentials;
+	private ResponsesConnection? _responses;
+
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
 
+	public void ConfigureSession(string instructions, Func<Session> getSession,
+		Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse) =>
+		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
+			.Configure(instructions, getSession, acceptRecovery, acceptResponse);
+
 	public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
-		Task.FromException<DialogResponse>(new NotSupportedException("LLM session initialization has not been implemented."));
+		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
+			.InitializeSessionAsync(session, cancellationToken);
 
 	public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
-		Task.FromException<DialogResponse>(new NotSupportedException("LLM requests have not been implemented."));
+		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
+			.SendAsync(request, cancellationToken);
 
 	public ChatGPTConnector(HttpClient httpClient, IChatGPTAuthorization authorization,
-		ChatGPTConnectorOptions options, ILogger<ChatGPTConnector> logger)
+		ChatGPTConnectorOptions options, ILogger<ChatGPTConnector> logger, IModelSelector modelSelector)
 		: this(httpClient, authorization, options, logger,
 			new ConfigurationManager<OpenIdConnectConfiguration>(Issuer + "/.well-known/openid-configuration",
-				new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(httpClient)))
+				new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(httpClient)), modelSelector)
 	{
 	}
 
 	internal ChatGPTConnector(HttpClient httpClient, IChatGPTAuthorization authorization,
 		ChatGPTConnectorOptions options, ILogger<ChatGPTConnector> logger,
-		IConfigurationManager<OpenIdConnectConfiguration> configuration)
+		IConfigurationManager<OpenIdConnectConfiguration> configuration, IModelSelector? modelSelector = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(options.ApplicationName);
 		ArgumentException.ThrowIfNullOrWhiteSpace(options.StorageDirectory);
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.LoginTimeout, TimeSpan.Zero);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ConnectionTimeout, TimeSpan.Zero);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ResponseTimeout, TimeSpan.Zero);
+		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ConnectionLifetime, TimeSpan.Zero);
+		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectDelay, TimeSpan.Zero);
+		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectAttempts, 1);
+		_modelSelector = modelSelector;
 		_httpClient = httpClient;
 		_authorization = authorization;
 		_options = options;
@@ -108,6 +125,7 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 		{
 			profile = await SignInAsync(credentials, cancellationToken);
 		}
+		_credentials = credentials;
 		credentials.Profile = profile;
 		credentials.PendingClientId = null;
 		await _store.SaveAsync(credentials, cancellationToken);
@@ -123,6 +141,59 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 		{
 			_logger.LogWarning("Signed in, but ChatGPT plan usage was not granted. AI requests are unavailable.");
 		}
+		if (_modelSelector != null)
+		{
+			if (!canUsePlan)
+			{
+				throw new UnauthorizedAccessException("ChatGPT plan usage permission is required for inference.");
+			}
+			var models = await GetModelsAsync(profile.AccessToken, cancellationToken);
+			await _modelSelector.InitializeAsync(models, cancellationToken);
+			var selected = _modelSelector.GetSelectedModel();
+			if (!models.Any(model => model.Id == selected.Id))
+			{
+				throw new InvalidOperationException("The selected model is not available for this account.");
+			}
+			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger,
+				tokenExpiry: () => _credentials!.Profile!.ExpiresAt);
+		}
+	}
+
+	private async Task<IReadOnlyList<LLMModel>> GetModelsAsync(string accessToken, CancellationToken cancellationToken)
+	{
+		using var request = new HttpRequestMessage(HttpMethod.Get, Resource + "/models");
+		request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+		using var response = await _httpClient.SendAsync(request, cancellationToken);
+		if (!response.IsSuccessStatusCode)
+		{
+			throw new HttpRequestException($"Failed to load ChatGPT models (HTTP {(int)response.StatusCode}).", null, response.StatusCode);
+		}
+		using var document = await response.Content.ReadFromJsonAsync<JsonDocument>(cancellationToken)
+			?? throw new InvalidDataException("The model catalog is empty.");
+		return document.RootElement.GetProperty("models").EnumerateArray()
+			.Where(model => OptionalString(model, "visibility") == "list")
+			.Select(model => new LLMModel(OptionalString(model, "slug")
+				?? throw new InvalidDataException("A model slug is missing."),
+				OptionalString(model, "display_name") ?? OptionalString(model, "slug")!)).ToArray();
+	}
+
+	private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
+	{
+		var credentials = _credentials ?? throw new InvalidOperationException("ChatGPT credentials are not initialized.");
+		var profile = credentials.Profile!;
+		if (profile.ExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(1))
+		{
+			profile = await TryRefreshAsync(profile, cancellationToken)
+				?? throw new UnauthorizedAccessException("The ChatGPT session has expired. Restart the application to sign in again.");
+			if (!profile.Scopes.Contains("chatgpt.tokens.use.direct", StringComparer.Ordinal)
+				|| !profile.Scopes.Contains("resource.invoke", StringComparer.Ordinal))
+			{
+				throw new UnauthorizedAccessException("ChatGPT plan usage permission was revoked.");
+			}
+			credentials.Profile = profile;
+			await _store.SaveAsync(credentials, cancellationToken);
+		}
+		return profile.AccessToken;
 	}
 
 	private async Task<ChatGPTProfile> SignInAsync(ChatGPTCredentials credentials, CancellationToken cancellationToken)
@@ -301,6 +372,10 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 			{
 				// InitializeObservedAsync has already logged the failure and propagated it to the caller.
 			}
+		}
+		if (_responses != null)
+		{
+			await _responses.DisposeAsync();
 		}
 		Volatile.Write(ref _account, null);
 		_sessionLock?.Dispose();

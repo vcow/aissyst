@@ -2,6 +2,7 @@ using aissyst.console;
 using aissyst.core;
 using aissyst.core.Database;
 using aissyst.core.LLMConnector.DTO;
+using aissyst.core.LLMConnector;
 using aissyst.core.LLMConnector.Model;
 using aissyst.core.Processor;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -157,6 +158,52 @@ public sealed class SessionModelTests
 		model.Reset(new DialogResponse { RequestId = request.RequestId, Error = "Temporary failure." });
 		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = request.RequestId }));
 		Assert.Equal("Initial summary.", model.GetRequest(RequestType.Reply).Summary);
+	}
+
+	[Fact]
+	public async Task RecoveryUsesFreshDialogAndReplacesSummaryWithoutLosingLaterFragments()
+	{
+		var database = new TestSessionDatabase();
+		var selector = new TestSessionSelector();
+		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
+		var connector = new LifecycleConnector();
+		await using var model = new SessionModel(selector, database, processor, connector,
+			new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+		await model.InitializeAsync();
+		Assert.Equal("Test initial instructions", connector.Instructions);
+		var first = DateTime.UtcNow;
+		processor.Process(new DialogMessage(first, AudioSourceType.Application, "First"));
+		var obsolete = model.GetRequest(RequestType.Reply);
+		var snapshot = connector.GetSession!();
+		processor.Process(new DialogMessage(first.AddSeconds(1), AudioSourceType.Application, "Later"));
+		connector.AcceptRecovery!(snapshot, new DialogResponse { Summary = "Rebuilt summary", SummaryTimestamp = first });
+		Assert.False(connector.AcceptResponse!(new DialogResponse { RequestId = obsolete.RequestId, Summary = "Old", SummaryTimestamp = first }));
+		var next = model.GetRequest(RequestType.Reply);
+		Assert.Equal("Rebuilt summary", next.Summary);
+		Assert.Equal("Later", Assert.Single(next.RawRecords).Message);
+		Assert.True(connector.AcceptResponse!(new DialogResponse { RequestId = next.RequestId, Summary = "Current", SummaryTimestamp = first.AddSeconds(1) }));
+		Assert.Empty(model.GetRequest(RequestType.Summary).RawRecords);
+	}
+
+	private sealed class LifecycleConnector : ILLMConnector, ILLMSessionLifecycle
+	{
+		internal string? Instructions;
+		internal Func<Session>? GetSession;
+		internal Action<Session, DialogResponse>? AcceptRecovery;
+		internal Func<DialogResponse, bool>? AcceptResponse;
+		public void ConfigureSession(string instructions, Func<Session> getSession,
+			Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse)
+		{
+			Instructions = instructions;
+			GetSession = getSession;
+			AcceptRecovery = acceptRecovery;
+			AcceptResponse = acceptResponse;
+		}
+		public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+		public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
+			Task.FromResult(new DialogResponse());
+		public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
+			throw new NotSupportedException();
 	}
 
 	private static TestLLMConnector SuccessfulConnector() => new()
