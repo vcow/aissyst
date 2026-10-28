@@ -50,3 +50,24 @@ The project is under active development. macOS audio capture, local transcriptio
 Sign in with ChatGPT has been implemented and verified. Actual LLM session initialization and inference requests are not yet implemented. The planned interaction uses a WebSocket connection.
 
 SQLite storage is implemented in [aissyst.sqlite](aissyst.sqlite/README.md). Integration with the console's session selection workflow is pending. The current console configuration therefore requires further implementation before the complete workflow can run.
+
+## Working with a separate Codex account
+
+Use `start-codex.sh` to work on this project with a ChatGPT account separate from the default Codex account. Sign in once, choosing the intended account in the browser:
+
+```sh
+./start-codex.sh login
+./start-codex.sh login status
+```
+
+Then start a project session:
+
+```sh
+./start-codex.sh
+```
+
+The launcher works from any directory, selects this repository as the working directory, and forwards arguments to Codex. For a first session that can inspect files without editing them, use `./start-codex.sh --sandbox read-only`.
+
+Configuration is shared in `.codex-account/config.toml`. Credentials, sessions, logs, and other runtime state stay in `.codex-account/` and are ignored by Git. The launcher uses file-based ChatGPT authentication, a separate state directory, and no shared daemon. Inherited API credentials are removed only from the launched process. It does not change the parent shell or the default account used by ordinary `codex` launches.
+
+On another machine, clone the repository and run the login command again. Existing default-account sessions are not copied. To continue this project's conversation, ask Codex to read `AGENTS.md`, `PROJECT_CONTEXT.md`, and `CHAT_HANDOFF.txt` if present.

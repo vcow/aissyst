@@ -47,3 +47,7 @@ models/
 # ChatGPT OAuth credentials (normally stored outside the repository)
 **/chatgpt/credentials.json*
 **/chatgpt/session.lock
+
+# Project-specific Codex account: share configuration, keep local state private
+/.codex-account/*
+!/.codex-account/config.toml
