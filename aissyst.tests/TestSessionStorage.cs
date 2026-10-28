@@ -43,8 +43,18 @@ internal sealed class TestSessionDatabase : IDatabase
 		throw new InvalidOperationException("Unexpected context enumeration.");
 	public Task<IReadOnlyList<SessionInfo>> GetSessionsAsync(CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected session enumeration.");
-	public Task<SessionContext> CreateSessionAsync(int contextId, CancellationToken cancellationToken = default) =>
+	public Task<SessionInfo> CreateSessionAsync(int contextId, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected session creation.");
+	public Task<ContextInfo> CreateContextAsync(string contextTemplatePath, string? contextName = null, CancellationToken cancellationToken = default) =>
+		throw new InvalidOperationException("Unexpected context creation.");
+	public Task AddSessionDialogRecordAsync(int sessionId, DialogMessage message, CancellationToken cancellationToken = default) =>
+		throw new InvalidOperationException("Unexpected dialog append.");
+	public Task ExportSessionAsync(int sessionId, string filePath, CancellationToken cancellationToken = default) =>
+		throw new InvalidOperationException("Unexpected session export.");
+	public Task<SessionInfo> ImportSessionAsync(string filePath, CancellationToken cancellationToken = default) =>
+		throw new InvalidOperationException("Unexpected session import.");
+	public Task<string> GetSessionInitialInstructionsAsync(int sessionId, CancellationToken cancellationToken = default) =>
+		throw new InvalidOperationException("Unexpected initial instructions load.");
 	public Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default) =>
 		throw new InvalidOperationException("Unexpected dialog save.");
 }

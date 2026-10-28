@@ -34,6 +34,13 @@ Desktop.ini
 # Session transcripts
 /transcripts/
 
+# Local SQLite databases and sidecar files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+!/aissyst.sqlite/
+
 # Downloaded transcription models (including application output directories)
 models/
 

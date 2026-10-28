@@ -1,0 +1,445 @@
+КОНТЕКСТ ДЛЯ ПРОДОЛЖЕНИЯ РАБОТЫ НАД AISSYST
+Снимок на 28 октября 2026 года. Самостоятельный файл для нового чата.
+
+ГОТОВОЕ ПЕРВОЕ СООБЩЕНИЕ В НОВОМ ЧАТЕ
+
+Продолжаем работу над aissyst из другого чата и аккаунта. Прочитай приложенный
+CHAT_HANDOFF.txt целиком и используй как передачу контекста. Если у тебя есть
+доступ к репозиторию, прочитай также AGENTS.md и PROJECT_CONTEXT.md, проверь
+текущие исходники и git status: код мог измениться после снимка.
+Общайся со мной на русском. Комментарии, программный вывод, исключения и README
+пиши на английском. Меняй файлы только по моей явной команде: вопросы и обсуждение
+не разрешают изменений. Сейчас только восстанови контекст и кратко подтверди,
+что понимаешь состояние проекта. Следующий этап я опишу сам: пользовательское
+взаимодействие, выбор контекста/сессии и подключение SQLite к консоли.
+Не начинай его реализацию автоматически.
+
+КАК ИСПОЛЬЗОВАТЬ ЭТОТ ФАЙЛ
+
+1. Приложить этот файл в новый чат и отправить первое сообщение выше.
+2. Если работа продолжается в той же локальной папке, дать агенту доступ к
+   /Users/vcow/Work/aissyst. Путь на другой машине может отличаться.
+3. Если доступа к папке нет, передать текущие исходники отдельно. Этот файл
+   сохраняет решения и состояние, но не заменяет репозиторий.
+4. Передавать именно рабочую копию с незакоммиченными файлами, а не только
+   содержимое последнего коммита. Новый проект SQLite ещё не закоммичен.
+5. Для передачи контекста не нужны bin/, obj/, models/, записи аудио и транскрипты.
+   OAuth-токены, файлы credentials.json и другие секреты передавать не требуется.
+   contexts/template игнорируется Git и содержит личные сведения пользователя;
+   при необходимости шаблона перенести его отдельно осознанно. Описание формата
+   и искусственные тестовые шаблоны уже есть в исходниках.
+
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА СОТРУДНИЧЕСТВА
+
+- Русский язык общения; английский язык кода, комментариев, вывода, исключений,
+  пользовательской технической документации README.
+- Только явно порученные изменения. Ревью/совет/вопрос сам по себе не разрешает
+  правок. Не добавлять возможности из списка будущих задач без команды.
+- Фигурные скобки вокруг тел условий и циклов, включая однострочные; редкое
+  исключение — условие с телом в одной строке.
+- CancellationToken — последний аргумент, имя cancellationToken.
+- Сохранять пользовательские изменения. Пользователь часто редактирует код
+  самостоятельно и возвращается за проверкой. Читать актуальный код перед работой.
+- Не коммитить без отдельной команды. Не откатывать чужие изменения.
+- Не плодить специализированные интерфейсы и сущности настроек без необходимости.
+  Общие настройки — ApplicationSettings в core; хоткеи — в console.
+- Не запускать субагентов без явной просьбы о делегировании.
+- Результат прошлых тестов относится к тому состоянию исходников, на котором
+  они запускались. Не выдавать его за проверку последующих изменений.
+
+ГДЕ МЫ ОСТАНОВИЛИСЬ
+
+Последняя реализация: отдельный проект aissyst.sqlite с полной реализацией IDatabase.
+Пройден полный набор: 158 тестов, сборка без предупреждений. Из них 22 новых случая
+покрывают SQLite. После тестов менялись только документация и .gitignore.
+
+Готово:
+- создание контекстов из ZIP-шаблона;
+- независимые сессии с полной копией контекста и начальных инструкций;
+- добавление и полная замена исходных фрагментов диалога;
+- экспорт и импорт сессии через GZip JSON версии 1;
+- транзакции, FK, индексы, schema version, точные UTC-временные метки;
+- README на английском и документация подготовки шаблона пользователем.
+
+ЕЩЁ НЕ ГОТОВО:
+- реальная реализация ISessionSelector и пользовательский сценарий выбора;
+- ссылка/регистрация SqliteDatabase в консольном приложении и выбор пути к базе;
+- подключение сохранения новых фрагментов диалога к основному потоку приложения;
+- отправка персональных начальных инструкций сессии перед Session;
+- реальные вызовы LLM: InitializeSession и SendRequest у ChatGPTConnector — заглушки;
+- WebSocket-транспорт и восстановление соединения.
+
+Важно: наличие методов хранения, DTO request_id и успешной авторизации НЕ означает,
+что интеграция всей цепочки уже готова. В SessionModel.InitializeCoreAsync пока
+не загружаются GetSessionInitialInstructionsAsync и не назначается возрастающий
+RequestId создаваемому Session. Это наблюдение для будущей интеграции, не команда
+на немедленное исправление. Существующие тесты не заменяют реального LLM-запуска.
+
+Пользователь сказал: «Позже я объясню придуманную мною схему взаимодействия
+с пользователем». Дождаться этой схемы, не проектировать UI вместо пользователя.
+
+ФАЙЛЫ ДЛЯ ПЕРВОГО ЗНАКОМСТВА С ИСХОДНИКАМИ
+
+- AGENTS.md и PROJECT_CONTEXT.md.
+- README.md, aissyst.core/Database/README.md, aissyst.sqlite/README.md.
+- aissyst.core/Database/IDatabase.cs и модели из той же папки.
+- aissyst.sqlite/SqliteDatabase.cs, ContextTemplate.cs, SessionDocument.cs.
+- aissyst.tests/SqliteDatabaseTests.cs и TestSessionStorage.cs.
+- aissyst.console/Program.cs, MainThreadWorker.cs, ConsoleHotkeySettings.cs.
+- aissyst.core/Controller/ApplicationController.cs.
+- aissyst.core/Processor/TextProcessor.cs и DialogMessageExtensions.cs.
+- aissyst.core/LLMConnector/Model/SessionModel.cs и DTO.
+- chatgpt-connector/README.md и ChatGPTConnector.cs.
+
+ЗАМЕНЁННЫЕ ИДЕИ, К КОТОРЫМ НЕ НУЖНО ВОЗВРАЩАТЬСЯ АВТОМАТИЧЕСКИ
+
+- База больше не задумана как редактируемый вручную JSON со ссылками на тексты.
+  Пользовательские входные данные — ZIP-шаблоны; хранилище — SQLite.
+- Для сессии нет ссылки-зависимости на исходный контекст: вся информация копируется.
+- Порядок/нумерация файлов блоков не имеют договорного значения.
+- Текстовый Process теперь синхронный, без CancellationToken.
+- Нет ISessionTextProcessor; альтернативный файловый процессор находится в console.
+- CaptureSession — scoped объект в дочернем DI scope, а не отдельный BackgroundService.
+- LLM не вызывается автоматически на каждую транскрипцию, только по запросу пользователя.
+- Транспорт по согласованному плану — Responses API через WebSocket + SiWC.
+  Упоминание HTTP streaming из документации не было решением сменить архитектуру.
+- Точный доступный режим SiWC/WebSocket проверять по актуальной официальной документации
+  перед реализацией; не считать план доказательством доступности конкретного API.
+
+ТЕКУЩИЕ КОНТРАКТЫ (снимок исходников, не отдельная спецификация)
+
+--- aissyst.core/Database/IDatabase.cs ---
+using aissyst.core.Processor;
+
+namespace aissyst.core.Database;
+
+public interface IDatabase
+{
+	Task<IReadOnlyList<ContextInfo>> GetContextsAsync(CancellationToken cancellationToken = default);
+	Task<IReadOnlyList<SessionInfo>> GetSessionsAsync(CancellationToken cancellationToken = default);
+	Task<ContextInfo> CreateContextAsync(string contextTemplatePath, string? contextName = null, CancellationToken cancellationToken = default);
+	Task<SessionInfo> CreateSessionAsync(int contextId, CancellationToken cancellationToken = default);
+	Task<SessionContext> GetSessionAsync(int sessionId, CancellationToken cancellationToken = default);
+	Task SetSessionDialogAsync(int sessionId, IReadOnlyList<DialogMessage> dialog, CancellationToken cancellationToken = default);
+	Task AddSessionDialogRecordAsync(int sessionId, DialogMessage message, CancellationToken cancellationToken = default);
+	Task ExportSessionAsync(int sessionId, string filePath, CancellationToken cancellationToken = default);
+	Task<SessionInfo> ImportSessionAsync(string filePath, CancellationToken cancellationToken = default);
+	Task<string> GetSessionInitialInstructionsAsync(int sessionId, CancellationToken cancellationToken = default);
+}
+
+--- aissyst.core/Database/ContextInfo.cs ---
+namespace aissyst.core.Database;
+
+public sealed record ContextInfo(
+	int Id,
+	string Name);
+
+--- aissyst.core/Database/ContextRecord.cs ---
+namespace aissyst.core.Database;
+
+public record ContextRecord(
+	string Topic,
+	string Body);
+
+--- aissyst.core/Database/SessionInfo.cs ---
+namespace aissyst.core.Database;
+
+public record SessionInfo(
+	int Id,
+	DateTime CreationTime,
+	string Name = "");
+
+--- aissyst.core/Database/SessionContext.cs ---
+namespace aissyst.core.Database;
+
+public sealed record SessionContext(
+	SessionInfo SessionInfo,
+	string Preview,
+	IReadOnlyList<ContextRecord> Context,
+	IReadOnlyList<DialogRecord> Dialog);
+
+--- aissyst.core/Database/DialogRecord.cs ---
+namespace aissyst.core.Database;
+
+public record DialogRecord(
+	DateTime Timestamp,
+	string Role,
+	string Message);
+
+--- aissyst.core/Processor/DialogMessage.cs ---
+namespace aissyst.core.Processor;
+
+public sealed record DialogMessage(
+	DateTime Timestamp,
+	AudioSourceType Source,
+	string Text);
+
+--- aissyst.core/Processor/ITextProcessor.cs ---
+namespace aissyst.core.Processor;
+
+public interface ITextProcessor
+{
+	bool IsReady { get; }
+	Task InitializeAsync(CancellationToken cancellationToken = default);
+	DialogMessage? Process(DialogMessage message);
+	IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime);
+}
+
+--- aissyst.core/LLMConnector/ILLMConnector.cs ---
+using aissyst.core.LLMConnector.DTO;
+
+namespace aissyst.core.LLMConnector;
+
+public interface ILLMConnector
+{
+	Task InitializeAsync(CancellationToken cancellationToken = default);
+	Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default);
+	Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default);
+}
+
+--- aissyst.core/LLMConnector/Model/ISessionSelector.cs ---
+namespace aissyst.core.LLMConnector.Model;
+
+public interface ISessionSelector
+{
+	Task InitializeAsync(CancellationToken cancellationToken = default);
+	int GetSelectedSessionId();
+}
+
+--- aissyst.core/Output/IOutput.cs ---
+using aissyst.core.Processor;
+
+namespace aissyst.core.Output;
+
+public interface IOutput
+{
+	void PrintDialogMessage(DialogMessage message);
+	void PrintLLMAnswer(string text);
+}
+
+--- aissyst.core/LLMConnector/DTO/Session.cs ---
+using System.Text.Json.Serialization;
+
+namespace aissyst.core.LLMConnector.DTO;
+
+public sealed class Session
+{
+	[JsonPropertyName("request_id")] public int RequestId { get; set; }
+	[JsonPropertyName("preview")] public string Preview { get; set; } = string.Empty;
+	[JsonPropertyName("context")] public IList<SessionContextItem> Context { get; set; } = Array.Empty<SessionContextItem>();
+	[JsonPropertyName("dialog")] public IList<DialogItem> Dialog { get; set; } = new List<DialogItem>();
+	[JsonPropertyName("md_format")] public bool UseMdFormat { get; set; } = false;
+}
+
+--- aissyst.core/LLMConnector/DTO/DialogRequest.cs ---
+using System.Text.Json.Serialization;
+
+namespace aissyst.core.LLMConnector.DTO;
+
+public sealed class DialogRequest
+{
+	[JsonPropertyName("request_id")] public int RequestId { get; set; }
+	[JsonPropertyName("summary")] public string Summary { get; set; } = string.Empty;
+	[JsonPropertyName("raw_records")] public IList<DialogItem> RawRecords { get; set; } = Array.Empty<DialogItem>();
+	[JsonPropertyName("request")] public RequestType Request { get; set; } = RequestType.Summary;
+}
+
+--- aissyst.core/LLMConnector/DTO/DialogResponse.cs ---
+using System.Text.Json.Serialization;
+using aissyst.core.Serialization;
+
+namespace aissyst.core.LLMConnector.DTO;
+
+public sealed class DialogResponse
+{
+	[JsonPropertyName("request_id")] public int RequestId { get; set; }
+	[JsonPropertyName("error")] public string Error { get; set; } = string.Empty;
+	[JsonPropertyName("summary")] public string Summary { get; set; } = string.Empty;
+	[JsonPropertyName("summary_ts")]
+	[JsonConverter(typeof(NullableDateTimeJsonConverter))]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public DateTime? SummaryTimestamp { get; set; }
+	[JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
+}
+
+СОСТОЯНИЕ GIT НА МОМЕНТ ПЕРЕНОСА
+
+Ветка: open-ai
+Последний коммит: 05b2a03 Database template.
+
+ M .gitignore
+ M PROJECT_CONTEXT.md
+ M README.md
+ M aissyst.core/Database/README.md
+ M aissyst.core/Database/SessionInfo.cs
+ M aissyst.sln
+ M aissyst.tests/TestSessionStorage.cs
+ M aissyst.tests/aissyst.tests.csproj
+?? aissyst.sqlite/ContextTemplate.cs
+?? aissyst.sqlite/README.md
+?? aissyst.sqlite/SessionDocument.cs
+?? aissyst.sqlite/SqliteDatabase.cs
+?? aissyst.sqlite/aissyst.sqlite.csproj
+?? aissyst.tests/SqliteDatabaseTests.cs
+
+Список выше снят до создания CHAT_HANDOFF.txt. Сам файл также нужно перенести.
+
+ПОЛНЫЙ СНИМОК PROJECT_CONTEXT.md
+
+# Контекст проекта aissyst
+
+Обновлено: 28 октября 2026 года. Реализация SQLite завершена по команде пользователя. Следующие изменения — по новой явной команде пользователя.
+
+## Назначение и платформы
+
+- Приложение помогает вести диалог: захватывает аудио, транскрибирует локально через Whisper и по запросу пользователя обращается к LLM за переводом, подсказкой или ответом.
+- Два собеседника однозначно определяются источниками: микрофон — пользователь/экзаменуемый (`interviewee`), приложение — собеседник/экзаменатор (`interviewer`). Определение нескольких говорящих внутри источника сейчас не требуется.
+- Текущая платформа — macOS; Windows предусмотрена архитектурой, её аудиозахват ещё не реализован. iOS в проекте нет.
+- .NET 10, Generic Host, DI, R3. Кроссплатформенная координация находится в `aissyst.core`, консольный интерфейс — в `aissyst.console`.
+
+## Аудио и транскрибация
+
+- Источники непрерывно прослушиваются во время сессии. Начало аудиофрагмента определяется входным сигналом; тишина сама по себе запись не начинает.
+- Завершение фрагмента: тишина, хоткей или достижение `MaxRecordingDuration`. Прослушивание после этого продолжается.
+- Лимит считается по PCM-сэмплам с учётом частоты и числа каналов. Большой входной буфер делится с сохранением остатка для следующих фрагментов.
+- В `ApplicationSettings` лимит по умолчанию 30 секунд; в текущем `Program.cs` явно установлено 15 секунд. Таймаут тишины — 1 секунда.
+- `WhisperTranscriber` использует английскую `small.en-q5_1`; модель загружается при отсутствии в локальном кеше, проверяется SHA-256 и не хранится в Git.
+- В `Program.cs` оба лимита обработки установлены в 1. Параллельную работу одного экземпляра Whisper не включать без отдельной проверки.
+- Переполнение очередей удаляет самые старые ожидающие элементы с сообщением в журнале. Очистка очередей не отменяет уже выполняющуюся обработку.
+- Источники публикуют аудиозаписи через R3; контроллер передаёт их в транскрибатор и текстовый процессор.
+- `CaptureSession` создаётся в дочернем DI scope; уничтожение scope останавливает захват. После остановки перед сохранением текста ожидается завершение обработки оставшихся аудиофрагментов.
+
+## Текстовый процессор и вывод
+
+- Вместо текстовых кортежей используется immutable record `DialogMessage(Timestamp, Source, Text)`.
+- `ITextProcessor.Process(DialogMessage)` синхронный, без `CancellationToken`. Возвращает законченную реплику или `null`.
+- Фрагменты одного источника объединяются. Реплика считается законченной при поступлении непустого сообщения другого источника; пустой текст её не завершает.
+- Незавершённая реплика доступна в истории, но не выводится как завершённая до смены источника.
+- `GetDialog(fromTime)` возвращает снимок сообщений с `Timestamp > fromTime`, сортирует их по времени и объединяет соседние сообщения одного источника. Метка объединённой реплики соответствует последнему включённому фрагменту.
+- `TextProcessor` восстанавливает историю выбранной сессии через `IDatabase.GetSessionAsync`. Роли `interviewer`/`interviewee` преобразуются в источники приложения/микрофона; прочие роли — в `None`.
+- Восстановленные записи не выдаются повторно как новые законченные реплики. Контроллер отдельно выводит загруженную историю при запуске.
+- `IOutput` отвечает за пользовательский вывод (`PrintDialogMessage`, `PrintLLMAnswer`); `ConsoleOutput` зарегистрирован в DI. Логгеры используются для служебных сообщений и ошибок.
+- Дополнительный `SessionFileTextProcessor` находится в `aissyst.console`, не в core. Он сохраняет отдельные `microphone.txt` и `application.txt` в уникальной папке `transcripts/session-…` при завершении сессии. В файлах только текст одной строкой.
+- `ISessionTextProcessor` удалён. Дополнительные методы файлового процессора вызываются напрямую из `MainThreadWorker` после приведения типа; контроллер предоставляет общее `WaitForIdleAsync`.
+- Сейчас в DI выбран обычный `TextProcessor`, файловый процессор остаётся альтернативной реализацией.
+
+## Сессия и LLM
+
+- `ISessionSelector.InitializeAsync` выбирает сессию один раз. Затем модель и процессор синхронно получают её ID через `GetSelectedSessionId()`.
+- Контроллер инициализирует селектор до модели/процессора. При подключённой модели она инициализирует процессор; отдельная перегрузка `InitializeAsync(sessionId, …)` удалена.
+- `SessionModel` загружает вводную и тематический контекст из БД, получает восстановленный диалог из процессора и формирует `Session` для LLM.
+- DTO описаны в `aissyst.core/LLMConnector/DTO`. `DTO-fields.txt` удалён пользователем в текущих изменениях; не восстанавливать автоматически. Пример начальных инструкций и протокола находится в `contexts/template/agent_initial_instructions.txt`.
+- Пользователь унифицировал идентификатор: `Session`, `DialogRequest` и `DialogResponse` имеют поле `request_id` / свойство `RequestId`. Прежнее поле запроса `id` больше не актуально. `DialogRequest` также содержит `summary`, `raw_records` и тип запроса; ответ — `error`, `summary`, опциональный `summary_ts`, `message`.
+- Саммари обновляется при каждом успешном ответе. В него входит состоявшийся диалог, но не сгенерированная подсказка, которую пользователь мог не произнести.
+- `summary_ts` задаёт последнюю включённую в саммари реплику. Следующий запрос включает только сообщения с более поздней меткой. При пустом `raw_records` метка отсутствует; прежняя подтверждённая граница сохраняется.
+- Для `summary_ts` добавлен nullable DateTime JSON-конвертер: отсутствие, JSON null и пустая/пробельная строка дают null; некорректная дата вызывает ошибку. При сериализации null поле опускается.
+- Ответ проверяется относительно отправленного снимка. Не допускается смещение границы на ещё не отправленные сообщения или стирание существующего саммари пустым ответом.
+- Актуальность ответов определяется `request_id`, а не только временем: разные запросы могут охватывать одинаковый диалог. Устаревшие и повторные ответы не применяются.
+- Отправленный снимок не должен изменяться при продолжении той же реплики. Строгое чередование источников в списке не является обязательным условием.
+- `md_format` разрешает Markdown только внутри ответного поля `message`, для удобства чтения пользователем. Входной контекст и `summary` не требуют Markdown.
+
+## Хоткеи
+
+Настраиваются в `ConsoleHotkeySettings`; при запуске выводится подсказка.
+
+- Enter — начать прослушивание.
+- Space — завершить текущие аудиофрагменты и продолжить прослушивание.
+- S — остановить прослушивание.
+- C — очистить ожидающие аудиозаписи и транскрипции с выводом количества удалённых элементов.
+- Q / Ctrl+C — завершить приложение.
+- 1 — перевод последней реплики собеседника на русский.
+- 2 — подсказка для ответа на английском.
+- 3 — полноценный ответ на английском.
+- 4 — перевод и подсказка.
+- 5 — перевод и полноценный ответ.
+
+Запросы помощи доступны во время прослушивания и между сессиями записи. В режиме перенаправленного ввода после команды нужен Enter.
+
+`ApplicationController.SendRequestAsync` выполняет запрос без блокирования чтения клавиатуры, обновляет модель и выводит ответ через `IOutput`. Новый запрос отменяет предыдущий; его поздний ответ не применяется даже при игнорировании отмены провайдером. Ошибки журналируются. Запросы LLM отслеживаются отдельно от обработки аудио: `WaitForIdleAsync` не ждёт их, а завершение контроллера отменяет и ожидает их.
+
+`HostOptions.ShutdownTimeout` установлен пользователем в 3 секунды.
+
+## Подключение ChatGPT: что реально готово
+
+- Реализован вход Sign in with ChatGPT через системный браузер, loopback callback, PKCE и проверку ID-токена.
+- Реальный вход в аккаунт успешно проверен; разрешение на использование плана получено. Повторный запуск использует сохранённую сессию без браузера.
+- Секреты сохраняются вне репозитория; не читать и не выводить содержимое файлов учётных данных без необходимости. Токены и URL с ID token hint не журналировать.
+- Реальная отправка контекста и запросов к модели **ещё не реализована**: `ChatGPTConnector.InitializeSession` и `SendRequest` пока возвращают `NotSupportedException`.
+- Хоткеи, применение ответа, отмена и вывод проверены с тестовым коннектором, а не реальным inference-запросом.
+- Пользователь подтвердил план: **Responses API через WebSocket с авторизацией Sign in with ChatGPT**. Под это обсуждались начальная отправка контекста и последующие запросы. HTTP со streaming был приведён ассистентом из документации, но не принят как изменение архитектуры. Не представлять выбор транспорта как открытый вопрос без новых оснований.
+- WebSocket-транспорт ещё не реализован. При реализации проверить актуальную официальную документацию и ограничения SiWC; не считать, что авторизация сама обеспечивает хранение контекста. Локальная история нужна для восстановления после разрыва соединения.
+
+## Хранение данных: последнее обсуждение
+
+`IDatabase` реализован в отдельном проекте `aissyst.sqlite` (подробности ниже). `ISessionSelector` пока не реализован. В `Program.cs` база ещё не зарегистрирована: пользователь позже объяснит схему взаимодействия с пользователем. Полноценный запуск также требует реализации запросов LLM.
+
+Прежняя идея JSON со ссылками на текстовые файлы заменена следующими решениями пользователя:
+
+- База закрыта для ручного редактирования. Внешнее добавление данных — создание контекста из ZIP-шаблона и импорт ранее экспортированной сессии. Пользователь выбрал SQLite и подтвердил схему с четырьмя таблицами.
+- `ContextInfo` содержит `Id` и `Name`. `SessionInfo` теперь содержит `Id`, `CreationTime` и `Name` (последний параметр по умолчанию пустой для совместимости старых вызовов). Новые сессии получают имя контекста + UTC-время создания, без ссылки на контекст.
+- `ContextRecord` содержит `Topic` и `Body`; `SessionContext` — метаданные сессии, preview, блоки контекста и диалог; `DialogRecord` — время, роль, текст.
+- Методы `IDatabase`: `GetContextsAsync`, `GetSessionsAsync`, `CreateContextAsync`, `CreateSessionAsync`, `GetSessionAsync`, `SetSessionDialogAsync`, `AddSessionDialogRecordAsync`, `ExportSessionAsync`, `ImportSessionAsync`, `GetSessionInitialInstructionsAsync`. Проверять актуальные сигнатуры в коде.
+
+Шаблон контекста:
+
+- ZIP, в корне обязательны `preview.txt`, `agent_initial_instructions.txt` и каталог `context/`. Дополнительной внешней папки вокруг них быть не должно.
+- UTF-8, обычный текст. Начальные инструкции передаются LLM до `Session`.
+- Каждый `.txt` непосредственно в `context/` — тематический блок: первая строка — заголовок, остальное — тело с сохранением внутренних переносов. Заголовок непустой, тело может быть пустым.
+- Имена блоков произвольны. Нумерация и порядок блоков не имеют договорного значения. Не навязывать префиксы или дополнительное упорядочивание.
+- Вложенные каталоги и дополнительные служебные файлы в корне не читаются.
+- `CreateContextAsync` получает путь к ZIP и необязательное имя. При отсутствии/пробельном имени используется имя архива без расширения. Контекст получает уникальный ID, имя не является идентификатором.
+- В `contexts/template` пользователь подготовил развёрнутый пример: 68 блоков, у всех есть заголовки; 47, 48, 64 и 65 имеют пустое тело. `EMPTY_BLOCKS.txt` — служебная памятка, игнорируется при импорте. Шаблон содержит персональные сведения: не дублировать их без необходимости в документации.
+- Пользователь добавил `request_id` в начальные инструкции и примеры. Оставшаяся небольшая несогласованность: текст примеров всё ещё говорит «Все четыре поля», хотя полей пять. Шаблон ассистент не менял.
+
+Сессии и переносимость:
+
+- При создании сессии preview, инструкции и блоки контекста полностью копируются. Копия неизменна всю жизнь сессии. Сессия **не знает об исходном контексте как отдельной сущности** и не зависит от его наличия.
+- `GetSessionInitialInstructionsAsync` возвращает персональную копию инструкций конкретной сессии.
+- Пользователь согласился сохранять исходные фрагменты транскрипции. Порядок определяется временными метками; дополнительную нумерацию/порядковый ключ сейчас не вводить. `SetSessionDialogAsync` оставлен для полной замены истории, `AddSessionDialogRecordAsync` — добавление фрагмента.
+- Экспорт содержит все данные сессии, включая инструкции и контекст, и не предназначен для ручного редактирования. Реализован GZip-сжатый JSON (`.json.gz`), версия формата 1.
+- Формат имеет версию; пока достаточно точного совпадения версий без обратной совместимости. Импорт выдаёт новый ID в целевой базе.
+- Пользователь считает достаточным прочитать файл целиком и десериализовать до записи в БД; потоковая обработка и запрет распаковки на диск не нужны. Обсуждён минимальный контроль обязательных полей/ненулевого результата и версии, поскольку обычная десериализация может принять `{}`. Сложный валидатор не требовался.
+- Создание/импорт сохраняют готовый объект атомарно после разбора; не оставляют частичные записи.
+
+## Документация, подготовленная 27–28 октября
+
+- Создан английский корневой `README.md`: назначение, основной процесс, структура решения и ограничения готовности.
+- Заполнен английский `aissyst.core/Database/README.md`: пошаговая подготовка шаблона пользователем, структура ZIP, правила блоков, протокол начальных инструкций, независимые сессии, импорт/экспорт и таблица методов `IDatabase`.
+- Корневой README ссылается на README базы данных; устаревшая фраза о пустом placeholder удалена. Локальные ссылки проверены.
+- Первоначально README базы описывал задуманный контракт и отсутствующее имя сессии. После реализации SQLite оба README обновлены: указаны готовое хранилище, поле Name и фактический формат экспорта.
+- До реализации SQLite ассистент менял только документацию; пользователь параллельно изменял контроллер, DTO, модель и тесты. При реализации SQLite полный тестовый набор прошёл, но отдельного полного ревью пользовательских изменений не проводилось.
+
+## Реализация SQLite
+
+- Добавлен `aissyst.sqlite` в решение и ссылку тестового проекта. Зависит от core и `Microsoft.Data.Sqlite` 10.0.13. Core не зависит от SQLite.
+- Публичный класс `aissyst.sqlite.SqliteDatabase(string databasePath)` реализует все методы `IDatabase`. Нужен путь к файлу; `:memory:` не поддерживается. Каталог и схема создаются лениво при первом обращении.
+- Таблицы `contexts`, `context_blocks` (FK `context_id`), `sessions` (включая `name`, `creation_time`, инструкции, preview и `context` как JSON-массив), `dialog_records` (FK `session_id`, отдельный integer ID, `ts`, `role`, `message`). Сессия не связана FK с исходным контекстом.
+- Foreign keys включены, WAL, индексы по `context_id` и `(session_id, ts)`, `PRAGMA user_version=1`. Неподдерживаемые версии отклоняются; миграций пока нет.
+- Каждая операция открывает/закрывает соединение (pooling отключён). Операции одного экземпляра сериализуются `SemaphoreSlim`; SQL выполняется в `Task.Run`, поскольку провайдер синхронный. Все операции имеют транзакцию, чтение использует согласованный снимок.
+- Даты хранятся как UTC ticks с точностью 100 нс. Local преобразуется в UTC, Unspecified трактуется как UTC. Возвращаемые даты имеют Kind=Utc. При одинаковых ts записи не теряются, внутренний ID разрешает равенство при чтении.
+- ZIP разбирается целиком до вставки без распаковки на диск. Переносы в теле блока сохраняются, BOM поддерживается. Начальные инструкции/preview обязательны; прочие корневые файлы и вложенные блоки игнорируются.
+- Сессия копирует контекст транзакционно. Исходные фрагменты добавляются отдельно или вся история заменяется атомарно. Источник Both для одной реплики отклоняется. Роли: Microphone→interviewee, Application→interviewer, None→unknown.
+- Экспорт: GZip + UTF-8 JSON, `format_version`, `name`, `creation_time`, `instructions`, `preview`, `context` и `dialog`. ID не экспортируются. В целевой базе выдаётся новый локальный ID (численно может совпасть с ID в другой базе), время и имя сохраняются.
+- Экспорт сначала пишет временный файл рядом с целевым, затем заменяет целевой файл. Импорт проверяет десериализацию, обязательные поля и версию до транзакции. Контекст в целевой базе не требуется.
+- Отмена проверяется между этапами и записями, перед commit; уже выполняющийся SQL не прерывается. Ошибки не скрываются: отсутствие сущности — KeyNotFoundException, неверные архивы/JSON — InvalidDataException (некорректный UTF-8 — ошибка декодирования), ошибки SQLite передаются вызывающему коду.
+- Добавлен английский `aissyst.sqlite/README.md`; обновлены корневой и Database README. `.gitignore` исключает SQLite-файлы/sidecar, но явно разрешает каталог проекта `aissyst.sqlite`.
+- Подправлен устаревший тестовый `TestSessionDatabase` под текущий IDatabase (возвращаемый тип CreateSessionAsync и недостающие заглушки).
+- В консоль база не подключалась, UI выбора сессии не реализовывался: пользователь отдельно опишет желаемое взаимодействие. Модель и передача LLM не менялись.
+
+Следующий этап — пользовательская схема взаимодействия/выбора сессии и подключение хранилища к приложению. Не начинать автоматически без команды пользователя.
+
+## Проверка
+
+Последний выполненный запуск после реализации SQLite: **158 прошли**, сборка без предупреждений. Новые 22 тестовых случая проверяют шаблоны, независимость сессий, даты и роли, замену/добавление диалога, параллельную запись двумя экземплярами, переносимость экспорта, неверные данные, отмену, отсутствие сущностей и транзакционный откат при сбоях записи контекста/импорта/замены диалога. Существующие тесты также прошли.
+
+Команда:
+
+```sh
+dotnet test aissyst.tests/aissyst.tests.csproj --no-restore -p:UseSharedCompilation=false
+```
+
+Коммит пользователь не поручал. После тестов обновлена только документация и исключение для каталога проекта в `.gitignore`.
+
+## Перенос в новый чат / другой аккаунт
+
+Подготовлен самостоятельный `CHAT_HANDOFF.txt` в корне: стартовое сообщение, правила сотрудничества, состояние последней задачи, текущие контракты и снимок этого контекста. Перед переносом исходников убедиться, что включены незакоммиченные файлы `aissyst.sqlite` и новые тесты: одного текущего HEAD недостаточно. Учётные данные OAuth и модель Whisper для передачи контекста не нужны.

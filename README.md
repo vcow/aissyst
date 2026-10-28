@@ -34,6 +34,7 @@ Local transcription does not require sending audio to the LLM. Conversation text
 | `aissyst.macos` | macOS audio capture implementation. |
 | `aissyst.windows` | Placeholder for Windows audio capture. |
 | `chatgpt-connector` | ChatGPT authentication and the LLM connector implementation. |
+| `aissyst.sqlite` | SQLite storage, context template import, and self-contained session export and import. |
 | `aissyst.tests` | Automated tests for processing, orchestration, sessions, and console workflows. |
 
 The solution uses .NET 10, Generic Host, dependency injection, and R3 for event-based coordination.
@@ -48,4 +49,4 @@ The project is under active development. macOS audio capture, local transcriptio
 
 Sign in with ChatGPT has been implemented and verified. Actual LLM session initialization and inference requests are not yet implemented. The planned interaction uses a WebSocket connection.
 
-Production database storage and session selection are also pending. The current console configuration therefore requires further implementation before the complete workflow can run.
+SQLite storage is implemented in [aissyst.sqlite](aissyst.sqlite/README.md). Integration with the console's session selection workflow is pending. The current console configuration therefore requires further implementation before the complete workflow can run.

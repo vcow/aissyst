@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\aissyst.sqlite\aissyst.sqlite.csproj" />
     <ProjectReference Include="..\aissyst.core\aissyst.core.csproj" />
     <ProjectReference Include="..\aissyst.macos\aissyst.macos.csproj" />
     <ProjectReference Include="..\aissyst.console\aissyst.console.csproj" />
