@@ -10,7 +10,6 @@ using aissyst.core.Output;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using Microsoft.Extensions.Logging;
-using R3;
 
 namespace aissyst.core.Controller;
 
@@ -26,9 +25,6 @@ public class ApplicationController : IAsyncDisposable
 	private readonly IApplicationSettings _settings;
 	private readonly ISessionSelector _sessionSelector;
 
-	private readonly CompositeDisposable _disposables = new();
-
-	private readonly CompositeDisposable _observableHandlers;
 	private readonly CancellationTokenSource _cancellationTokenSource;
 	private readonly CancellationToken _stoppingToken;
 
@@ -68,25 +64,26 @@ public class ApplicationController : IAsyncDisposable
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
 
-		_cancellationTokenSource = new CancellationTokenSource().AddTo(_disposables);
+		_cancellationTokenSource = new CancellationTokenSource();
 		_stoppingToken = _cancellationTokenSource.Token;
 
-		_audioRecordsSemaphore = new SemaphoreSlim(1, 1).AddTo(_disposables);
-		_textRecordsSemaphore = new SemaphoreSlim(1, 1).AddTo(_disposables);
-		_transcriberSemaphore = new SemaphoreSlim(settings.MaxTranscriptionProcessingCount, settings.MaxTranscriptionProcessingCount).AddTo(_disposables);
-		_textProcessorSemaphore = new SemaphoreSlim(settings.MaxTextProcessingCount, settings.MaxTextProcessingCount).AddTo(_disposables);
+		_audioRecordsSemaphore = new SemaphoreSlim(1, 1);
+		_textRecordsSemaphore = new SemaphoreSlim(1, 1);
+		_transcriberSemaphore = new SemaphoreSlim(settings.MaxTranscriptionProcessingCount, settings.MaxTranscriptionProcessingCount);
+		_textProcessorSemaphore = new SemaphoreSlim(settings.MaxTextProcessingCount, settings.MaxTextProcessingCount);
 
-		_observableHandlers = new CompositeDisposable().AddTo(_disposables);
+		_captureSession.MicrophoneRecordingCompleted += OnMicrophoneRecordingCompleted;
+		_captureSession.ApplicationRecordingCompleted += OnApplicationRecordingCompleted;
+	}
 
-		_captureSession.MicrophoneRecordObservable
-			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Microphone, frames), tracked: true))
-			.AddTo(_observableHandlers);
+	private void OnMicrophoneRecordingCompleted(IReadOnlyList<AudioFrame> frames)
+	{
+		_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Microphone, frames), tracked: true);
+	}
 
-		_captureSession.ApplicationRecordingObservable
-			.Subscribe(frames =>
-				_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Application, frames), tracked: true))
-			.AddTo(_observableHandlers);
+	private void OnApplicationRecordingCompleted(IReadOnlyList<AudioFrame> frames)
+	{
+		_ = RunBackgroundAsync(() => EnqueueAudio(DateTime.UtcNow, AudioSourceType.Application, frames), tracked: true);
 	}
 
 	public ValueTask DisposeAsync()
@@ -99,14 +96,15 @@ public class ApplicationController : IAsyncDisposable
 
 	private async Task DisposeCoreAsync()
 	{
-		_disposables.Remove(_observableHandlers);
-		_dialog.MessageCompleted -= PrintDialogMessage;
-		_dialog.HistoryReplaced -= PrintDialogHistory;
-
 		lock (_trackedTasksLock)
 		{
 			_isDisposed = true;
 		}
+
+		_captureSession.MicrophoneRecordingCompleted -= OnMicrophoneRecordingCompleted;
+		_captureSession.ApplicationRecordingCompleted -= OnApplicationRecordingCompleted;
+		_dialog.MessageCompleted -= PrintDialogMessage;
+		_dialog.HistoryReplaced -= PrintDialogHistory;
 
 		await ClearQueuesInternal();
 		await _cancellationTokenSource.CancelAsync();
@@ -127,7 +125,11 @@ public class ApplicationController : IAsyncDisposable
 		}
 		finally
 		{
-			_disposables.Dispose();
+			_audioRecordsSemaphore.Dispose();
+			_textRecordsSemaphore.Dispose();
+			_transcriberSemaphore.Dispose();
+			_textProcessorSemaphore.Dispose();
+			_cancellationTokenSource.Dispose();
 		}
 	}
 

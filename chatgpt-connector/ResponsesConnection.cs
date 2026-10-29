@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace chatgpt_connector;
 
-// Transport only: sockets, event correlation, continuation leases, and wire timeouts.
+// One active operation and one reader per connection. The caller owns confirmed application state.
 internal sealed class ResponsesConnection : IAsyncDisposable
 {
 	private sealed class Pending
@@ -14,13 +14,18 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		internal string? ResponseId;
 	}
 
-	private sealed class Continuation(ResponsesConnection owner, IResponsesSocket socket, string responseId, string stream) : ILLMContinuation
+	private sealed class Operation(CancellationTokenSource cancellation)
+	{
+		internal readonly CancellationTokenSource Cancellation = cancellation;
+		internal readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+	}
+
+	private sealed class Continuation(ResponsesConnection owner, IResponsesSocket socket, string responseId) : ILLMContinuation
 	{
 		private int _disposed;
 		internal readonly ResponsesConnection Owner = owner;
 		internal readonly IResponsesSocket Socket = socket;
 		internal readonly string ResponseId = responseId;
-		internal readonly string Stream = stream;
 		public object ConnectionId => Socket;
 		public bool IsValid
 		{
@@ -36,15 +41,9 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		public ILLMContinuation Retain()
 		{
 			ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-			return Owner.Lease(Socket, ResponseId, Stream);
+			return new Continuation(Owner, Socket, ResponseId);
 		}
-		public void Dispose()
-		{
-			if (Interlocked.Exchange(ref _disposed, 1) == 0)
-			{
-				Owner.ReleaseLease(Socket, Stream);
-			}
-		}
+		public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
 	}
 
 	private readonly Func<CancellationToken, Task<string>> _getToken;
@@ -53,17 +52,27 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private readonly ChatGPTConnectorOptions _options;
 	private readonly ILogger _logger;
 	private readonly CancellationTokenSource _shutdown = new();
-	private readonly SemaphoreSlim _sendGate = new(1, 1);
-	private readonly SemaphoreSlim _requestSlots = new(15, 15);
+	private readonly SemaphoreSlim _cancelGate = new(1, 1);
 	private readonly Lock _sync = new();
-	private readonly Dictionary<string, Pending> _pending = [];
-	private readonly Dictionary<string, int> _leases = [];
-	private readonly HashSet<Task> _requests = [];
+	private Operation? _active;
+	private bool _cancelling;
+	private Pending? _pending;
 	private IResponsesSocket? _socket;
 	private Task? _reader;
 	private Task? _disposal;
 	private Exception? _connectionFault;
 	public event EventHandler? ConnectionLost;
+
+	public bool IsBusy
+	{
+		get
+		{
+			lock (_sync)
+			{
+				return _active != null || _cancelling;
+			}
+		}
+	}
 
 	internal ResponsesConnection(string model, Func<CancellationToken, Task<string>> getToken,
 		ChatGPTConnectorOptions options, ILogger logger, Func<IResponsesSocket>? createSocket = null)
@@ -75,30 +84,134 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		_createSocket = createSocket ?? (() => new ResponsesSocket());
 	}
 
-	internal async Task ReconnectAsync(CancellationToken cancellationToken)
+	private Task<T> StartOperation<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
 	{
-		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-		await _sendGate.WaitAsync(linked.Token);
+		Operation operation;
+		lock (_sync)
+		{
+			ObjectDisposedException.ThrowIf(_disposal != null || _shutdown.IsCancellationRequested, this);
+			cancellationToken.ThrowIfCancellationRequested();
+			if (_active != null || _cancelling)
+			{
+				throw new InvalidOperationException("The LLM connector is busy. Wait for the current request to finish.");
+			}
+			operation = new Operation(CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token));
+			_active = operation;
+		}
+		return ExecuteAsync(operation, action);
+	}
+
+	private async Task<T> ExecuteAsync<T>(Operation operation, Func<CancellationToken, Task<T>> action)
+	{
 		try
+		{
+			return await action(operation.Cancellation.Token);
+		}
+		finally
 		{
 			lock (_sync)
 			{
-				ObjectDisposedException.ThrowIf(_disposal != null, this);
-				if (_connectionFault is ResponsesApiException { IsAuthorizationError: true })
-				{
-					throw new UnauthorizedAccessException("ChatGPT authorization failed. Restart the application to sign in again.");
-				}
+				_active = null;
+				operation.Cancellation.Dispose();
+				operation.Completion.TrySetResult();
 			}
-			Disconnect();
+		}
+	}
+
+	internal async Task ReconnectAsync(CancellationToken cancellationToken)
+	{
+		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+		while (true)
+		{
+			Task? active;
+			lock (_sync)
+			{
+				active = _active?.Completion.Task;
+			}
+			if (active != null)
+			{
+				await active.WaitAsync(linked.Token);
+			}
+			await _cancelGate.WaitAsync(linked.Token);
+			Task<bool> reconnect;
+			try
+			{
+				lock (_sync)
+				{
+					if (_active != null)
+					{
+						continue;
+					}
+				}
+				reconnect = StartOperation(async token =>
+				{
+					CheckAuthorization();
+					await DisconnectAsync();
+					await ConnectAsync(token);
+					return true;
+				}, linked.Token);
+			}
+			finally
+			{
+				_cancelGate.Release();
+			}
+			await reconnect;
+			return;
+		}
+	}
+
+	internal async Task CancelAsync(CancellationToken cancellationToken = default)
+	{
+		Operation? target;
+		lock (_sync)
+		{
+			target = _active;
+		}
+		if (target == null || !await _cancelGate.WaitAsync(0, cancellationToken))
+		{
+			return;
+		}
+		try
+		{
+			Task cancellation;
+			IResponsesSocket? socket;
+			lock (_sync)
+			{
+				if (!ReferenceEquals(target, _active))
+				{
+					return;
+				}
+				_cancelling = true;
+				socket = _socket;
+				cancellation = target.Cancellation.CancelAsync();
+			}
+			_logger.LogInformation("Canceling the active Responses request and closing the WebSocket.");
+			if (socket != null)
+			{
+				FailConnection(socket, new OperationCanceledException("The Responses request was canceled by the user."));
+			}
+			await cancellation;
+			await target.Completion.Task;
 			if (_reader != null)
 			{
 				await _reader;
 			}
-			await ConnectAsync(linked.Token);
 		}
 		finally
 		{
-			_sendGate.Release();
+			lock (_sync)
+			{
+				_cancelling = false;
+			}
+			_cancelGate.Release();
+		}
+	}
+
+	private void CheckAuthorization()
+	{
+		if (_connectionFault is ResponsesApiException { IsAuthorizationError: true } exception)
+		{
+			throw new UnauthorizedAccessException("ChatGPT authorization failed. Restart the application to sign in again.", exception);
 		}
 	}
 
@@ -107,59 +220,48 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		var socket = _createSocket();
 		try
 		{
-			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			timeout.CancelAfter(_options.ConnectionTimeout);
-			await socket.ConnectAsync(await _getToken(timeout.Token), timeout.Token);
 			lock (_sync)
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				_socket = socket;
 				_connectionFault = null;
 			}
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeout.CancelAfter(_options.ConnectionTimeout);
+			await socket.ConnectAsync(await _getToken(timeout.Token), timeout.Token);
+			cancellationToken.ThrowIfCancellationRequested();
 			_reader = ReadAsync(socket);
 			_logger.LogInformation("Connected to the Responses WebSocket.");
 		}
-		catch (ResponsesApiException exception) when (exception.IsAuthorizationError)
+		catch (Exception exception)
 		{
+			FailConnection(socket, exception);
 			socket.Dispose();
-			throw new UnauthorizedAccessException("ChatGPT authorization failed. Restart the application to sign in again.");
-		}
-		catch
-		{
-			socket.Dispose();
+			if (exception is ResponsesApiException { IsAuthorizationError: true })
+			{
+				throw new UnauthorizedAccessException("ChatGPT authorization failed. Restart the application to sign in again.", exception);
+			}
 			throw;
 		}
 	}
 
-	internal async Task<LLMResponse> InitializeSessionAsync(string instructions, Session session, CancellationToken cancellationToken)
+	internal Task<LLMResponse> InitializeSessionAsync(string instructions, Session session, CancellationToken cancellationToken)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(instructions);
-		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-		await _sendGate.WaitAsync(linked.Token);
-		try
+		return StartOperation(async token =>
 		{
 			if (_socket == null || _connectionFault != null)
 			{
-				if (_connectionFault is ResponsesApiException { IsAuthorizationError: true })
-				{
-					throw new UnauthorizedAccessException("ChatGPT authorization failed. Restart the application to sign in again.");
-				}
-				Disconnect();
-				if (_reader != null)
-				{
-					await _reader;
-				}
-				await ConnectAsync(linked.Token);
+				CheckAuthorization();
+				await DisconnectAsync();
+				await ConnectAsync(token);
 			}
 			var socket = _socket!;
-			var warmup = await ExchangeAsync(socket, instructions, "developer", null, false, "interview", linked.Token);
+			var warmup = await ExchangeAsync(socket, instructions, "developer", null, false, token);
 			var response = await ExchangeAsync(socket, JsonSerializer.Serialize(session), "user",
-				warmup.GetProperty("id").GetString(), true, "interview", linked.Token);
-			return CreateResult(socket, response, "interview");
-		}
-		finally
-		{
-			_sendGate.Release();
-		}
+				warmup.GetProperty("id").GetString(), true, token);
+			return CreateResult(socket, response);
+		}, cancellationToken);
 	}
 
 	internal Task<LLMResponse> SendAsync(DialogRequest request, ILLMContinuation continuation, CancellationToken cancellationToken)
@@ -168,170 +270,68 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			throw new ArgumentException("The continuation belongs to another connector.", nameof(continuation));
 		}
-		var snapshot = JsonSerializer.Serialize(request);
-		var lease = (Continuation)parent.Retain();
-		var operation = SendCoreAsync(snapshot, lease, cancellationToken);
-		lock (_sync)
+		return StartOperation(async token =>
 		{
-			_requests.Add(operation);
-		}
-		_ = ObserveAsync(operation);
-		return operation;
+			using var lease = (Continuation)parent.Retain();
+			var response = await ExchangeAsync(lease.Socket, JsonSerializer.Serialize(request), "user", lease.ResponseId, true, token);
+			return CreateResult(lease.Socket, response);
+		}, cancellationToken);
 	}
 
-	private async Task<LLMResponse> SendCoreAsync(string payload, Continuation parent, CancellationToken cancellationToken)
-	{
-		using (parent)
-		using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token))
-		{
-			if (!await _requestSlots.WaitAsync(_options.ResponseTimeout, linked.Token))
-			{
-				throw new TimeoutException("All Responses request slots are busy.");
-			}
-			string? lane = null;
-			Pending? pending = null;
-			try
-			{
-				await _sendGate.WaitAsync(linked.Token);
-				try
-				{
-					lock (_sync)
-					{
-						RequireSocket(parent.Socket);
-						lane = Enumerable.Range(0, 31).Select(index => "request_" + index)
-							.FirstOrDefault(candidate => !_pending.ContainsKey(candidate) && !_leases.ContainsKey(candidate))
-							?? throw new InvalidOperationException("No Responses stream is available.");
-						pending = new Pending();
-						_pending.Add(lane, pending);
-					}
-					using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
-					timeout.CancelAfter(_options.ResponseTimeout);
-					try
-					{
-						await parent.Socket.SendAsync(ResponsesProtocol.Create(_model, "user", payload, parent.ResponseId, true, lane), timeout.Token);
-					}
-					catch (Exception exception)
-					{
-						FailConnection(parent.Socket, exception);
-						throw;
-					}
-				}
-				finally
-				{
-					_sendGate.Release();
-				}
-				var response = await pending!.Completion.Task.WaitAsync(_options.ResponseTimeout, linked.Token);
-				return CreateResult(parent.Socket, response, lane!);
-			}
-			finally
-			{
-				if (lane != null && pending != null && !pending.Completion.Task.IsCompleted && !_shutdown.IsCancellationRequested)
-				{
-					// Retain both lane and parent until the server finishes the timed-out/canceled fork.
-					var drain = DrainAsync(lane, pending, parent.Retain());
-					lock (_sync)
-					{
-						_requests.Add(drain);
-					}
-					_ = ObserveAsync(drain);
-				}
-				else
-				{
-					ReleaseRequest(lane, pending);
-				}
-			}
-		}
-	}
-
-	private LLMResponse CreateResult(IResponsesSocket socket, JsonElement response, string lane)
+	private LLMResponse CreateResult(IResponsesSocket socket, JsonElement response)
 	{
 		var payload = ResponsesProtocol.Parse(response);
-		return new LLMResponse(payload, Lease(socket, response.GetProperty("id").GetString()!, lane));
-	}
-
-	private ILLMContinuation Lease(IResponsesSocket socket, string responseId, string lane)
-	{
 		lock (_sync)
 		{
 			RequireSocket(socket);
-			_leases[lane] = _leases.GetValueOrDefault(lane) + 1;
-			return new Continuation(this, socket, responseId, lane);
-		}
-	}
-
-	private void ReleaseLease(IResponsesSocket socket, string lane)
-	{
-		lock (_sync)
-		{
-			if (ReferenceEquals(socket, _socket) && _leases.TryGetValue(lane, out var count))
-			{
-				if (count == 1)
-				{
-					_leases.Remove(lane);
-				}
-				else
-				{
-					_leases[lane] = count - 1;
-				}
-			}
+			return new LLMResponse(payload, new Continuation(this, socket, response.GetProperty("id").GetString()!));
 		}
 	}
 
 	private void RequireSocket(IResponsesSocket socket)
 	{
-		ObjectDisposedException.ThrowIf(_disposal != null, this);
+		ObjectDisposedException.ThrowIf(_disposal != null || _shutdown.IsCancellationRequested, this);
 		if (!ReferenceEquals(socket, _socket) || _connectionFault != null)
 		{
 			throw new IOException("The Responses continuation belongs to a disconnected socket.");
 		}
 	}
 
-	private async Task DrainAsync(string lane, Pending pending, ILLMContinuation parent)
-	{
-		using (parent)
-		{
-			try { await pending.Completion.Task.WaitAsync(_shutdown.Token); }
-			catch (Exception) { /* The caller already received the failure. */ }
-			finally { ReleaseRequest(lane, pending); }
-		}
-	}
-
-	private void ReleaseRequest(string? lane, Pending? pending)
-	{
-		lock (_sync)
-		{
-			if (lane != null && _pending.TryGetValue(lane, out var current) && ReferenceEquals(current, pending))
-			{
-				_pending.Remove(lane);
-			}
-		}
-		_requestSlots.Release();
-	}
-
 	private async Task<JsonElement> ExchangeAsync(IResponsesSocket socket, string text, string role, string? previousId,
-		bool generate, string lane, CancellationToken cancellationToken)
+		bool generate, CancellationToken cancellationToken)
 	{
 		var pending = new Pending();
 		lock (_sync)
 		{
 			RequireSocket(socket);
-			_pending.Add(lane, pending);
+			_pending = pending;
 		}
 		try
 		{
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			timeout.CancelAfter(_options.ResponseTimeout);
-			await socket.SendAsync(ResponsesProtocol.Create(_model, role, text, previousId, generate, lane), timeout.Token);
-			return await pending.Completion.Task.WaitAsync(timeout.Token);
+			try
+			{
+				await socket.SendAsync(ResponsesProtocol.Create(_model, role, text, previousId, generate), timeout.Token);
+			}
+			catch (Exception exception)
+			{
+				FailConnection(socket, exception);
+				throw;
+			}
+			return await pending.Completion.Task.WaitAsync(_options.ResponseTimeout, cancellationToken);
+		}
+		catch (Exception exception) when (exception is OperationCanceledException or TimeoutException)
+		{
+			// Leaving an unfinished generation on the socket would permit overlapping requests.
+			FailConnection(socket, exception);
+			throw;
 		}
 		finally
 		{
 			lock (_sync)
 			{
-				if (_pending.TryGetValue(lane, out var current) && ReferenceEquals(current, pending))
-				{
-					_pending.Remove(lane);
-				}
+				_pending = null;
 			}
 		}
 	}
@@ -345,32 +345,28 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 				using var document = JsonDocument.Parse(await socket.ReceiveAsync(_shutdown.Token));
 				var item = document.RootElement;
 				var type = item.GetProperty("type").GetString();
-				var lane = item.TryGetProperty("stream_id", out var stream) ? stream.GetString() : null;
 				lock (_sync)
 				{
 					if (!ReferenceEquals(socket, _socket))
 					{
 						return;
 					}
-					var pending = lane != null ? _pending.GetValueOrDefault(lane) : null;
+					var pending = _pending;
 					if (type == "error")
 					{
-						var error = item.GetProperty("error");
-						var code = error.TryGetProperty("code", out var codeValue) && codeValue.ValueKind == JsonValueKind.String
-							? codeValue.GetString()! : "unspecified_error";
-						var exception = new ResponsesApiException(code,
-							item.TryGetProperty("status", out var status) && status.TryGetInt32(out var statusValue) ? statusValue : null);
-						if (pending == null || exception.IsAuthorizationError || code == "previous_response_not_found")
+						var exception = LogApiError(item, type, pending?.ResponseId);
+						if (pending == null || exception.IsAuthorizationError || exception.Code == "previous_response_not_found")
 						{
 							throw exception;
 						}
 						pending.Completion.TrySetException(exception);
 						continue;
 					}
-					if (pending == null || !item.TryGetProperty("response", out var response))
+					if (pending == null || type is not ("response.created" or "response.in_progress" or "response.completed" or "response.failed" or "response.incomplete"))
 					{
 						continue;
 					}
+					var response = item.GetProperty("response");
 					var id = response.GetProperty("id").GetString();
 					if (string.IsNullOrWhiteSpace(id) || (pending.ResponseId != null && pending.ResponseId != id))
 					{
@@ -387,7 +383,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 					}
 					else if (type is "response.failed" or "response.incomplete")
 					{
-						pending.Completion.TrySetException(new InvalidDataException($"Responses API event: {type}."));
+						pending.Completion.TrySetException(LogApiError(item, type, id));
 					}
 				}
 			}
@@ -396,6 +392,17 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			FailConnection(socket, exception);
 		}
+	}
+
+	private ResponsesApiException LogApiError(JsonElement item, string? eventType, string? responseId)
+	{
+		var exception = ResponsesProtocol.ParseError(item);
+		_logger.LogError("Responses API request failed. Model: {Model}; Event: {EventType}; " +
+			"Response: {ResponseId}; HTTP status: {Status}; Code: {Code}; Type: {ErrorType}; " +
+			"Parameter: {Parameter}; Request ID: {RequestId}; Server message: {ServerMessage}",
+			_model, eventType, responseId, exception.Status, exception.Code, exception.ErrorType,
+			exception.Parameter, exception.RequestId, exception.ServerMessage);
+		return exception;
 	}
 
 	private void FailConnection(IResponsesSocket socket, Exception exception)
@@ -408,45 +415,31 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 				return;
 			}
 			_connectionFault = exception;
-			foreach (var pending in _pending.Values)
-			{
-				pending.Completion.TrySetException(exception);
-			}
+			_pending?.Completion.TrySetException(exception);
 			notify = !_shutdown.IsCancellationRequested;
 		}
+		socket.Dispose();
 		if (notify)
 		{
-			_logger.LogWarning("The Responses connection was interrupted ({ErrorType}).", exception.GetType().Name);
+			_logger.LogWarning(exception, "The Responses connection was interrupted.");
 			ConnectionLost?.Invoke(this, EventArgs.Empty);
 		}
 	}
 
-	private async Task ObserveAsync(Task operation)
+	private async Task DisconnectAsync()
 	{
-		try { await operation; }
-		catch (Exception) { /* The caller receives the failure. */ }
-		finally
-		{
-			lock (_sync)
-			{
-				_requests.Remove(operation);
-			}
-		}
-	}
-
-	private void Disconnect()
-	{
+		IResponsesSocket? socket;
 		lock (_sync)
 		{
-			var socket = _socket;
+			socket = _socket;
 			_socket = null;
-			foreach (var pending in _pending.Values)
-			{
-				pending.Completion.TrySetException(new IOException("The Responses WebSocket is disconnected."));
-			}
-			_pending.Clear();
-			_leases.Clear();
-			socket?.Dispose();
+			_pending?.Completion.TrySetException(new IOException("The Responses WebSocket is disconnected."));
+		}
+		socket?.Dispose();
+		if (_reader != null)
+		{
+			await _reader;
+			_reader = null;
 		}
 	}
 
@@ -461,19 +454,23 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private async Task DisposeCoreAsync()
 	{
 		await _shutdown.CancelAsync();
-		Disconnect();
-		await _sendGate.WaitAsync();
-		_sendGate.Release();
-		if (_reader != null)
-		{
-			await _reader;
-		}
-		Task[] requests;
+		Task? active;
 		lock (_sync)
 		{
-			requests = _requests.ToArray();
+			active = _active?.Completion.Task;
 		}
-		try { await Task.WhenAll(requests); }
-		catch (Exception) { /* Individual requests have already completed their callers. */ }
+		if (active != null)
+		{
+			await active;
+		}
+		await _cancelGate.WaitAsync();
+		try
+		{
+			await DisconnectAsync();
+		}
+		finally
+		{
+			_cancelGate.Release();
+		}
 	}
 }

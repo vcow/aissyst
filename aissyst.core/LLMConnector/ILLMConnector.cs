@@ -14,9 +14,11 @@ public sealed record LLMResponse(DialogResponse Payload, ILLMContinuation Contin
 
 public interface ILLMConnector
 {
+	bool IsBusy { get; }
 	event EventHandler? ConnectionLost;
 	Task InitializeAsync(CancellationToken cancellationToken = default);
 	Task ReconnectAsync(CancellationToken cancellationToken = default);
+	Task CancelAsync(CancellationToken cancellationToken = default);
 	Task<LLMResponse> InitializeSession(string instructions, Session session, CancellationToken cancellationToken = default);
 	Task<LLMResponse> SendRequest(DialogRequest request, ILLMContinuation continuation, CancellationToken cancellationToken = default);
 }

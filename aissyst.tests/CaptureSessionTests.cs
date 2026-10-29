@@ -1,7 +1,6 @@
 using aissyst.console;
 using aissyst.core;
 using aissyst.core.Audio;
-using R3;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -214,8 +213,8 @@ public class CaptureSessionTests
 		builder.Services.AddSingleton<IAudioCapture>(provider => provider.GetRequiredService<TestAudioCapture>());
 		var host = builder.Build();
 		var records = host.Services.GetRequiredService<ConsoleCaptureSession>();
-		records.MicrophoneRecordObservable.Subscribe(frames => _records.Enqueue((AudioSourceType.Microphone, frames)));
-		records.ApplicationRecordingObservable.Subscribe(frames => _records.Enqueue((AudioSourceType.Application, frames)));
+		records.MicrophoneRecordingCompleted += frames => _records.Enqueue((AudioSourceType.Microphone, frames));
+		records.ApplicationRecordingCompleted += frames => _records.Enqueue((AudioSourceType.Application, frames));
 		return host;
 	}
 }

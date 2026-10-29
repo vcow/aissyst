@@ -23,8 +23,27 @@ internal sealed class TestLLMConnector : ILLMConnector
 	internal Func<Session, CancellationToken, Task<DialogResponse>>? Initialize;
 	internal Func<DialogRequest, CancellationToken, Task<DialogResponse>>? Send;
 	internal readonly List<ILLMContinuation> Parents = [];
+	private readonly Lock _sync = new();
+	private CancellationTokenSource? _active;
+	private TaskCompletionSource? _completion;
+	public bool IsBusy { get { lock (_sync) { return _active != null; } } }
 	public event EventHandler? ConnectionLost;
-	internal void Disconnect() => ConnectionLost?.Invoke(this, EventArgs.Empty);
+	internal void Disconnect()
+	{
+		lock (_sync)
+		{
+			_active?.Cancel();
+		}
+		ConnectionLost?.Invoke(this, EventArgs.Empty);
+	}
+	public Task CancelAsync(CancellationToken cancellationToken = default)
+	{
+		if (IsBusy)
+		{
+			Disconnect();
+		}
+		return Task.CompletedTask;
+	}
 
 	public Task InitializeAsync(CancellationToken cancellationToken = default)
 	{
@@ -32,27 +51,35 @@ internal sealed class TestLLMConnector : ILLMConnector
 		return Task.CompletedTask;
 	}
 
-	public Task ReconnectAsync(CancellationToken cancellationToken = default)
+	public async Task ReconnectAsync(CancellationToken cancellationToken = default)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
+		Task? active;
+		lock (_sync)
+		{
+			active = _completion?.Task;
+		}
+		if (active != null)
+		{
+			await active.WaitAsync(cancellationToken);
+		}
 		Reconnects++;
 		Connection = new object();
-		return Task.CompletedTask;
 	}
 
-	public async Task<LLMResponse> InitializeSession(string instructions, Session session, CancellationToken cancellationToken = default)
+	public Task<LLMResponse> InitializeSession(string instructions, Session session, CancellationToken cancellationToken = default) => RunAsync(async token =>
 	{
 		Interlocked.Increment(ref SessionInitializations);
 		Instructions = instructions;
 		var connection = Connection;
-		var response = await (Initialize?.Invoke(session, cancellationToken)
+		var response = await (Initialize?.Invoke(session, token)
 			?? throw new InvalidOperationException("Unexpected LLM session initialization."));
 		// Existing fixtures construct payloads without specifying the initialization request ID.
 		response.RequestId = session.RequestId;
 		return new LLMResponse(response, new TestContinuation(connection, "session"));
-	}
+	}, cancellationToken);
 
-	public async Task<LLMResponse> SendRequest(DialogRequest request, ILLMContinuation continuation, CancellationToken cancellationToken = default)
+	public Task<LLMResponse> SendRequest(DialogRequest request, ILLMContinuation continuation, CancellationToken cancellationToken = default) => RunAsync(async token =>
 	{
 		Interlocked.Increment(ref Requests);
 		lock (Parents)
@@ -60,8 +87,38 @@ internal sealed class TestLLMConnector : ILLMConnector
 			Parents.Add(continuation);
 		}
 		var connection = Connection;
-		var response = await (Send?.Invoke(request, cancellationToken)
+		var response = await (Send?.Invoke(request, token)
 			?? throw new InvalidOperationException("Unexpected LLM request."));
 		return new LLMResponse(response, new TestContinuation(connection, request.RequestId.ToString()));
+	}, cancellationToken);
+
+	private async Task<LLMResponse> RunAsync(Func<CancellationToken, Task<LLMResponse>> action, CancellationToken cancellationToken)
+	{
+		CancellationTokenSource active;
+		TaskCompletionSource completion;
+		lock (_sync)
+		{
+			if (_active != null)
+			{
+				throw new InvalidOperationException("The LLM connector is busy.");
+			}
+			active = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			_active = active;
+			completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+			_completion = completion;
+		}
+		try
+		{
+			return await action(active.Token).WaitAsync(active.Token);
+		}
+		finally
+		{
+			lock (_sync)
+			{
+				_active = null;
+				active.Dispose();
+				completion.TrySetResult();
+			}
+		}
 	}
 }

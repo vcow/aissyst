@@ -14,7 +14,6 @@ using aissyst.core.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using R3;
 
 namespace aissyst.tests;
 
@@ -191,8 +190,8 @@ public class AvailableSourcesTests
 			return value == 0.5f ? "First fragment" : "Second fragment";
 		};
 		var records = new ConcurrentQueue<IReadOnlyList<AudioFrame>>();
-		using var subscription = host.Services.GetRequiredService<ConsoleCaptureSession>()
-			.MicrophoneRecordObservable.Subscribe(records.Enqueue);
+		var captureSession = host.Services.GetRequiredService<ConsoleCaptureSession>();
+		captureSession.MicrophoneRecordingCompleted += records.Enqueue;
 		var previousInput = Console.In;
 		var previousOutput = Console.Out;
 		using var input = new ControlledInput();
@@ -237,6 +236,7 @@ public class AvailableSourcesTests
 		}
 		finally
 		{
+			captureSession.MicrophoneRecordingCompleted -= records.Enqueue;
 			input.Complete();
 			Console.SetIn(previousInput);
 			Console.SetOut(previousOutput);

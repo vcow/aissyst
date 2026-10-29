@@ -4,11 +4,37 @@ using aissyst.core.LLMConnector.DTO;
 
 namespace chatgpt_connector;
 
-internal sealed class ResponsesApiException(string code, int? status = null)
-	: IOException($"Responses API error: {code}" + (status.HasValue ? $" (HTTP {status})." : "."))
+internal sealed class ResponsesApiException(string code, int? status = null, string? serverMessage = null,
+	string? errorType = null, string? parameter = null, string? requestId = null)
+	: IOException(FormatMessage(code, status, serverMessage, errorType, parameter, requestId))
 {
 	internal string Code { get; } = code;
-	internal bool IsAuthorizationError => status is 401 or 403;
+	internal int? Status { get; } = status;
+	internal string? ServerMessage { get; } = serverMessage;
+	internal string? ErrorType { get; } = errorType;
+	internal string? Parameter { get; } = parameter;
+	internal string? RequestId { get; } = requestId;
+	internal bool IsAuthorizationError => Status is 401 or 403;
+
+	private static string FormatMessage(string code, int? status, string? serverMessage,
+		string? errorType, string? parameter, string? requestId)
+	{
+		var message = new StringBuilder($"Responses API error: {code}");
+		if (status.HasValue)
+		{
+			message.Append($" (HTTP {status})");
+		}
+		message.Append('.');
+		foreach (var (name, value) in new[] { ("Message", serverMessage), ("Type", errorType),
+			("Parameter", parameter), ("Request ID", requestId) })
+		{
+			if (!string.IsNullOrWhiteSpace(value))
+			{
+				message.Append($" {name}: {value}");
+			}
+		}
+		return message.ToString();
+	}
 }
 
 internal static class ResponsesProtocol
@@ -21,11 +47,11 @@ internal static class ResponsesProtocol
 		 "required":["request_id","error","summary","summary_ts","message"],"additionalProperties":false}
 		""").RootElement.Clone();
 
-	internal static string Create(string model, string role, string text, string? previousId, bool generate, string streamId = "interview")
+	internal static string Create(string model, string role, string text, string? previousId, bool generate)
 	{
 		var body = new Dictionary<string, object?>
 		{
-			["type"] = "response.create", ["stream_id"] = streamId, ["model"] = model, ["store"] = false,
+			["type"] = "response.create", ["model"] = model, ["store"] = false,
 			["input"] = new[] { new { type = "message", role, content = new[] { new { type = "input_text", text } } } }
 		};
 		if (previousId != null)
@@ -42,6 +68,43 @@ internal static class ResponsesProtocol
 		}
 		return JsonSerializer.Serialize(body);
 	}
+
+	internal static ResponsesApiException ParseError(JsonElement item)
+	{
+		var response = Property(item, "response");
+		var error = Property(item, "error");
+		if (error.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+		{
+			error = Property(response, "error");
+		}
+		var status = Property(item, "status");
+		var message = ReadString(Property(error, "message"))
+			?? DiagnosticText(Property(error, "detail"))
+			?? DiagnosticText(Property(item, "detail"))
+			?? ReadString(Property(item, "message"))
+			?? ReadString(error);
+		var reason = ReadString(Property(Property(response, "incomplete_details"), "reason"));
+		if (reason != null)
+		{
+			message = $"{message ?? "The response is incomplete."} Reason: {reason}";
+		}
+		return new ResponsesApiException(ReadString(Property(error, "code")) ?? "unspecified_error",
+			status.ValueKind == JsonValueKind.Number && status.TryGetInt32(out var value) ? value : null,
+			message, ReadString(Property(error, "type")), ReadString(Property(error, "param")),
+			ReadString(Property(item, "request_id")) ?? ReadString(Property(error, "request_id")));
+	}
+
+	private static JsonElement Property(JsonElement item, string name) =>
+		item.ValueKind == JsonValueKind.Object && item.TryGetProperty(name, out var value) ? value : default;
+
+	private static string? ReadString(JsonElement item) =>
+		item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()) ? item.GetString() : null;
+
+	private static string? DiagnosticText(JsonElement item) => item.ValueKind switch
+	{
+		JsonValueKind.Object or JsonValueKind.Array => item.GetRawText(),
+		_ => ReadString(item)
+	};
 
 	internal static DialogResponse Parse(JsonElement response)
 	{

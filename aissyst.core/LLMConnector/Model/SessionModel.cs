@@ -17,7 +17,8 @@ public sealed class SessionModel : IAsyncDisposable
 	private readonly SessionRecoveryOptions _recoveryOptions;
 	private readonly Lock _sync = new();
 	private readonly CancellationTokenSource _shutdown = new();
-	private readonly HashSet<Task> _requests = [];
+	private Task? _request;
+	private bool _requestInProgress;
 	private Task? _initialization;
 	private Task? _recovery;
 	private Task? _disposal;
@@ -151,6 +152,10 @@ public sealed class SessionModel : IAsyncDisposable
 		{
 			EnsureReady();
 			cancellationToken.ThrowIfCancellationRequested();
+			if (_requestInProgress || _connector.IsBusy)
+			{
+				throw new InvalidOperationException("The LLM connector is busy. Wait for the current request to finish.");
+			}
 			if (!Enum.IsDefined(request))
 			{
 				throw new ArgumentOutOfRangeException(nameof(request), "The request type is not supported.");
@@ -161,9 +166,9 @@ public sealed class SessionModel : IAsyncDisposable
 				RawRecords = Msg2DTO(_dialog.GetDialog(_state.SummaryTimestamp))
 			};
 			var parent = _state.Continuation.Retain();
+			_requestInProgress = true;
 			var operation = SendCoreAsync(payload, parent, cancellationToken);
-			_requests.Add(operation);
-			_ = ObserveRequestAsync(operation);
+			_request = operation;
 			return operation;
 		}
 	}
@@ -208,6 +213,10 @@ public sealed class SessionModel : IAsyncDisposable
 			if (!accepted)
 			{
 				result?.Continuation.Dispose();
+			}
+			lock (_sync)
+			{
+				_requestInProgress = false;
 			}
 		}
 	}
@@ -343,25 +352,6 @@ public sealed class SessionModel : IAsyncDisposable
 		}
 	}
 
-	private async Task ObserveRequestAsync(Task operation)
-	{
-		try
-		{
-			await operation;
-		}
-		catch (Exception)
-		{
-			// SendCoreAsync already logs failures; disposal only needs to await completion.
-		}
-		finally
-		{
-			lock (_sync)
-			{
-				_requests.Remove(operation);
-			}
-		}
-	}
-
 	public ValueTask DisposeAsync()
 	{
 		lock (_sync)
@@ -384,13 +374,16 @@ public sealed class SessionModel : IAsyncDisposable
 		{
 			await _recovery;
 		}
-		Task[] requests;
+		Task? request;
 		lock (_sync)
 		{
-			requests = _requests.ToArray();
+			request = _request;
 		}
-		try { await Task.WhenAll(requests); }
-		catch (Exception) { /* Individual requests already log failures. */ }
+		if (request != null)
+		{
+			try { await request; }
+			catch (Exception) { /* The request already logs failures. */ }
+		}
 		_state?.Continuation.Dispose();
 		_shutdown.Dispose();
 	}

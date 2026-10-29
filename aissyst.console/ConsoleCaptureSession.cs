@@ -1,21 +1,18 @@
 using aissyst.core;
 using aissyst.core.Audio;
-using R3;
 
 namespace aissyst.console;
 
 public sealed class ConsoleCaptureSession(IAudioCapture audioCapture, IApplicationSettings settings,
 	ConsoleHotkeySettings hotkeys) : ICaptureSession, IDisposable
 {
-	private readonly Subject<IReadOnlyList<AudioFrame>> _microphoneRecords = new();
-	private readonly Subject<IReadOnlyList<AudioFrame>> _applicationRecords = new();
 	private bool _disposed;
 
 	public AudioInputDevice? SelectedMicrophone { get; private set; }
 	public AudioApplication? SelectedApplication { get; private set; }
 	public bool HasSelectedSources { get; private set; }
-	public Observable<IReadOnlyList<AudioFrame>> MicrophoneRecordObservable => _microphoneRecords;
-	public Observable<IReadOnlyList<AudioFrame>> ApplicationRecordingObservable => _applicationRecords;
+	public event Action<IReadOnlyList<AudioFrame>>? MicrophoneRecordingCompleted;
+	public event Action<IReadOnlyList<AudioFrame>>? ApplicationRecordingCompleted;
 
 	public async Task InitializeAsync(CancellationToken cancellationToken = default)
 	{
@@ -66,11 +63,11 @@ public sealed class ConsoleCaptureSession(IAudioCapture audioCapture, IApplicati
 		IReadOnlyList<AudioFrame> frames = [new(recording.Samples, recording.Format, TimeSpan.Zero)];
 		if (source == AudioSourceType.Microphone)
 		{
-			_microphoneRecords.OnNext(frames);
+			MicrophoneRecordingCompleted?.Invoke(frames);
 		}
 		else
 		{
-			_applicationRecords.OnNext(frames);
+			ApplicationRecordingCompleted?.Invoke(frames);
 		}
 	}
 
@@ -111,7 +108,7 @@ public sealed class ConsoleCaptureSession(IAudioCapture audioCapture, IApplicati
 			return;
 		}
 		_disposed = true;
-		_microphoneRecords.Dispose();
-		_applicationRecords.Dispose();
+		MicrophoneRecordingCompleted = null;
+		ApplicationRecordingCompleted = null;
 	}
 }

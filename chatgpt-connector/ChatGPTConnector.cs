@@ -34,8 +34,12 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 	private ResponsesConnection? _responses;
 
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
+	public bool IsBusy => _responses?.IsBusy ?? false;
 
 	public event EventHandler? ConnectionLost;
+
+	public Task CancelAsync(CancellationToken cancellationToken = default) =>
+		_responses?.CancelAsync(cancellationToken) ?? Task.CompletedTask;
 
 	public Task ReconnectAsync(CancellationToken cancellationToken = default) =>
 		(_responses ?? throw new InvalidOperationException("The connector has not been initialized.")).ReconnectAsync(cancellationToken);

@@ -37,7 +37,7 @@ Local transcription does not require sending audio to the LLM. Conversation text
 | `aissyst.sqlite` | SQLite storage, context template import, and self-contained session export and import. |
 | `aissyst.tests` | Automated tests for processing, orchestration, sessions, and console workflows. |
 
-The solution uses .NET 10, Generic Host, dependency injection, and R3 for event-based coordination.
+The solution uses .NET 10, Generic Host, dependency injection, and standard C# events for notifications.
 
 `SessionModel` owns request snapshots, response validation, and the confirmed summary/continuation state. The connector returns parsed replies with opaque continuation leases and reports connection loss; it does not apply application state. `DialogCoordinator` serializes transcript processing and restoration and notifies the controller, which owns display updates.
 
@@ -49,7 +49,7 @@ See [Database operation and context template authoring](aissyst.core/Database/RE
 
 The project is under active development. macOS audio capture, local transcription, dialogue processing, and assistance request orchestration are implemented.
 
-Sign in with ChatGPT has been implemented and verified. The [ChatGPT connector](chatgpt-connector/README.md) now implements Responses API WebSocket initialization, account-specific model selection, JSON requests and responses, cancellation, token renewal, and connection recovery. The transport has automated tests with synthetic server events; real-account inference compatibility has not yet been verified.
+Sign in with ChatGPT has been implemented and verified. The [ChatGPT connector](chatgpt-connector/README.md) now implements Responses API WebSocket initialization, account-specific model selection, JSON requests and responses, cancellation, token renewal, and connection recovery. LLM requests run one at a time; busy requests are rejected immediately, and emergency cancellation closes the socket and triggers recovery. A minimal real-account WebSocket request succeeded without `stream_id`; the complete console inference workflow still needs live verification.
 
 SQLite storage is implemented in [aissyst.sqlite](aissyst.sqlite/README.md) and registered in the console application. At startup, select an existing session or choose `Create New`, then select a context or `Create from Template`. After selecting a session, choose `(o)open`, `(n)return to list`, or `(d)delete`. After selecting a context, choose `(c)create new session`, `(n)return to list`, or `(d)delete`. Deletion requires typing the exact word `delete`; any other response returns to the refreshed list. Deleting a context preserves existing sessions; deleting a session removes its dialogue. Empty lists advance directly to the next step. Importing a template immediately creates and selects a session. Invalid menu numbers are retried; template or database failures end the application with a nonzero exit code. Closing standard input or pressing Ctrl+C stops startup.
 

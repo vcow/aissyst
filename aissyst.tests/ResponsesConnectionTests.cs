@@ -16,30 +16,32 @@ public sealed class ResponsesConnectionTests
 	private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
 
 	[Fact]
-	public async Task InitializationReturnsLeasedContinuationAndNewRequestsUseExplicitParent()
+	public async Task InitializationAndRequestsUseExplicitParentWithoutNamedStreams()
 	{
 		using var socket = new FakeSocket();
 		await using var connection = Create(() => socket);
+		Assert.False(connection.IsBusy);
+		await connection.CancelAsync();
 		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
 		using var parent = initial.Continuation;
+		Assert.False(connection.IsBusy);
 		Assert.Empty(initial.Payload.Summary);
 		Assert.False(socket.Sent[0].GetProperty("generate").GetBoolean());
 		Assert.Equal("developer", socket.Sent[0].GetProperty("input")[0].GetProperty("role").GetString());
 		Assert.Equal(socket.Id(1), socket.Sent[1].GetProperty("previous_response_id").GetString());
 		Assert.True(socket.Sent[1].GetProperty("text").GetProperty("format").GetProperty("strict").GetBoolean());
 		var first = await connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
-		using var firstCursor = first.Continuation;
-		var second = await connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
-		using var secondCursor = second.Continuation;
-		// Receiving first did not silently commit it. The caller explicitly kept the original parent.
-		Assert.Equal(socket.Id(2), socket.Sent.Last().GetProperty("previous_response_id").GetString());
-		var third = await connection.SendAsync(new DialogRequest { RequestId = 3 }, secondCursor, default);
-		third.Continuation.Dispose();
-		Assert.Equal(socket.Id(4), socket.Sent.Last().GetProperty("previous_response_id").GetString());
+		using var nextParent = first.Continuation;
+		var second = await connection.SendAsync(new DialogRequest { RequestId = 2 }, nextParent, default);
+		second.Continuation.Dispose();
+		Assert.Equal(socket.Id(3), socket.Sent.Last().GetProperty("previous_response_id").GetString());
+		await connection.CancelAsync();
+		Assert.Equal(0, socket.Disposals);
+		Assert.All(socket.Sent, item => Assert.False(item.TryGetProperty("stream_id", out _)));
 	}
 
 	[Fact]
-	public async Task IndependentResponsesCanArriveInReverseOrderWithoutAcceptanceCallbacks()
+	public async Task BusyRequestsFailImmediatelyWithoutQueueingOrCancelingTheActiveRequest()
 	{
 		using var socket = new FakeSocket();
 		await using var connection = Create(() => socket);
@@ -47,17 +49,19 @@ public sealed class ResponsesConnectionTests
 		using var parent = initial.Continuation;
 		socket.Hold = true;
 		var first = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
-		var second = connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
-		Assert.Equal(2, socket.HeldMessages.Count);
-		socket.CompleteHeld(1);
-		var b = await second.WaitAsync(Timeout);
-		using var cursorB = b.Continuation;
-		Assert.Equal(2, b.Payload.RequestId);
+		Assert.True(connection.IsBusy);
+		await Assert.ThrowsAsync<InvalidOperationException>(() => connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default));
+		await Assert.ThrowsAsync<InvalidOperationException>(() => connection.InitializeSessionAsync("Rules", new Session(), default));
+		Assert.Single(socket.HeldMessages);
 		Assert.False(first.IsCompleted);
-		socket.CompleteHeld(0);
-		var a = await first.WaitAsync(Timeout);
-		a.Continuation.Dispose();
-		Assert.Equal(1, a.Payload.RequestId);
+		socket.CompleteHeld();
+		var result = await first.WaitAsync(Timeout);
+		using var nextParent = result.Continuation;
+		Assert.False(connection.IsBusy);
+		socket.Hold = false;
+		var next = await connection.SendAsync(new DialogRequest { RequestId = 3 }, nextParent, default);
+		next.Continuation.Dispose();
+		Assert.Equal(4, socket.Sent.Count);
 	}
 
 	[Theory]
@@ -65,7 +69,7 @@ public sealed class ResponsesConnectionTests
 	[InlineData("response.incomplete")]
 	[InlineData("invalid_json")]
 	[InlineData("refusal")]
-	public async Task RequestErrorsDoNotMutateOrInvalidateConfirmedParent(string failure)
+	public async Task CompletedRequestErrorsReleaseBusyStateWithoutChangingTheCallerParent(string failure)
 	{
 		using var socket = new FakeSocket();
 		await using var connection = Create(() => socket);
@@ -75,6 +79,7 @@ public sealed class ResponsesConnectionTests
 		connection.ConnectionLost += (_, _) => lost++;
 		socket.Failure = failure;
 		await Assert.ThrowsAnyAsync<Exception>(() => connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default));
+		Assert.False(connection.IsBusy);
 		Assert.Equal(0, lost);
 		socket.Failure = null;
 		var result = await connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
@@ -83,16 +88,35 @@ public sealed class ResponsesConnectionTests
 	}
 
 	[Fact]
-	public async Task SemanticValidationBelongsToModelRatherThanTransport()
+	public async Task SimultaneousSendAttemptsAdmitOnlyOneRequest()
 	{
 		using var socket = new FakeSocket();
 		await using var connection = Create(() => socket);
 		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
 		using var parent = initial.Continuation;
-		socket.Failure = "wrong_request_id";
-		var result = await connection.SendAsync(new DialogRequest { RequestId = 7 }, parent, default);
+		socket.Hold = true;
+		using var start = new ManualResetEventSlim();
+		var attempts = Enumerable.Range(0, 2).Select(index => Task.Run(() =>
+		{
+			start.Wait();
+			try
+			{
+				return (Request: connection.SendAsync(new DialogRequest { RequestId = index + 1 }, parent, default), Error: (Exception?)null);
+			}
+			catch (Exception exception)
+			{
+				return (Request: (Task<LLMResponse>?)null, Error: exception);
+			}
+		})).ToArray();
+		start.Set();
+		var results = await Task.WhenAll(attempts).WaitAsync(Timeout);
+		var admitted = Assert.Single(results, item => item.Request != null).Request!;
+		Assert.IsType<InvalidOperationException>(Assert.Single(results, item => item.Error != null).Error);
+		Assert.Single(socket.HeldMessages);
+		socket.CompleteHeld();
+		var result = await admitted.WaitAsync(Timeout);
 		result.Continuation.Dispose();
-		Assert.Equal(-1, result.Payload.RequestId);
+		Assert.False(connection.IsBusy);
 	}
 
 	[Theory]
@@ -103,9 +127,7 @@ public sealed class ResponsesConnectionTests
 		using var first = new FakeSocket();
 		using var second = new FakeSocket();
 		var sockets = new Queue<FakeSocket>([first, second]);
-		var tokens = 0;
-		await using var connection = new ResponsesConnection("model", _ => { tokens++; return Task.FromResult("test-access-token"); },
-			new ChatGPTConnectorOptions(), NullLogger.Instance, () => sockets.Dequeue());
+		await using var connection = Create(() => sockets.Dequeue());
 		var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		connection.ConnectionLost += (_, _) => lost.TrySetResult();
 		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
@@ -127,30 +149,90 @@ public sealed class ResponsesConnectionTests
 		Assert.Empty(second.Sent);
 		var restored = await connection.InitializeSessionAsync("Rules", new Session(), default);
 		restored.Continuation.Dispose();
-		Assert.Equal(2, tokens);
 		Assert.False(second.Sent[0].TryGetProperty("previous_response_id", out _));
 		await Assert.ThrowsAsync<IOException>(() => connection.SendAsync(new DialogRequest(), oldParent, default));
+		Assert.False(connection.IsBusy);
 	}
 
 	[Fact]
-	public async Task TimeoutDoesNotReconnectOrPermitReusingAnUnfinishedLane()
+	public async Task CancelClosesTheSocketOnceAndDiscardsConcurrentCancellationCalls()
+	{
+		using var socket = new FakeSocket();
+		await using var connection = Create(() => socket);
+		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		using var parent = initial.Continuation;
+		var readerRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		socket.ReceiveCloseWait = readerRelease.Task;
+		socket.Hold = true;
+		var lost = 0;
+		connection.ConnectionLost += (_, _) => Interlocked.Increment(ref lost);
+		var request = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
+		var cancellation = connection.CancelAsync();
+		try
+		{
+			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+			Assert.True(connection.IsBusy);
+			Assert.False(cancellation.IsCompleted);
+			await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => connection.CancelAsync())).WaitAsync(Timeout);
+			await Assert.ThrowsAsync<InvalidOperationException>(() => connection.SendAsync(new DialogRequest(), parent, default));
+			Assert.Equal(1, socket.Disposals);
+			Assert.Equal(1, lost);
+		}
+		finally
+		{
+			readerRelease.TrySetResult();
+			await cancellation.WaitAsync(Timeout);
+		}
+		Assert.False(connection.IsBusy);
+		Assert.False(parent.IsValid);
+		await connection.CancelAsync();
+		Assert.Equal(1, lost);
+	}
+
+	[Fact]
+	public async Task CancellationDuringConnectionSetupClosesTheConnectingSocket()
+	{
+		var connecting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		using var socket = new FakeSocket { ConnectWait = connecting.Task };
+		await using var connection = Create(() => socket);
+		var initialization = connection.InitializeSessionAsync("Rules", new Session(), default);
+		Assert.True(connection.IsBusy);
+		await connection.CancelAsync().WaitAsync(Timeout);
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => initialization);
+		Assert.False(connection.IsBusy);
+		Assert.Equal(1, socket.Disposals);
+		Assert.Empty(socket.Sent);
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task TimeoutOrCallerCancellationClosesUnfinishedGenerationBeforeReleasingBusy(bool callerCancellation)
 	{
 		using var socket = new FakeSocket();
 		await using var connection = new ResponsesConnection("model", _ => Task.FromResult("test-access-token"),
 			new ChatGPTConnectorOptions { ResponseTimeout = TimeSpan.FromMilliseconds(200) }, NullLogger.Instance, () => socket);
-		var lost = 0;
-		connection.ConnectionLost += (_, _) => lost++;
 		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
 		using var parent = initial.Continuation;
 		socket.Hold = true;
-		await Assert.ThrowsAsync<TimeoutException>(() => connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default));
-		var heldLane = socket.HeldMessages[0].Item.GetProperty("stream_id").GetString();
-		socket.Hold = false;
-		var next = await connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
-		next.Continuation.Dispose();
-		Assert.NotEqual(heldLane, socket.Sent.Last().GetProperty("stream_id").GetString());
-		socket.CompleteHeld();
-		Assert.Equal(0, lost);
+		var lost = 0;
+		connection.ConnectionLost += (_, _) => Interlocked.Increment(ref lost);
+		using var cancellation = new CancellationTokenSource();
+		var request = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, cancellation.Token);
+		Assert.True(connection.IsBusy);
+		if (callerCancellation)
+		{
+			await cancellation.CancelAsync();
+			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+		}
+		else
+		{
+			await Assert.ThrowsAsync<TimeoutException>(() => request);
+		}
+		Assert.False(connection.IsBusy);
+		Assert.False(parent.IsValid);
+		Assert.Equal(1, socket.Disposals);
+		Assert.Equal(1, lost);
 	}
 
 	[Fact]
@@ -164,38 +246,44 @@ public sealed class ResponsesConnectionTests
 		var pending = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
 		await connection.DisposeAsync().AsTask().WaitAsync(Timeout);
 		await Assert.ThrowsAnyAsync<Exception>(() => pending);
+		Assert.False(connection.IsBusy);
+		await connection.DisposeAsync();
 	}
 
 	[Fact]
-	public async Task ModelAndWireKeepPreviousContinuationWhenNewerResponseFailsValidation()
+	public async Task EmergencyCancellationRestoresModelAndAllowsANewRequestOnTheNewSocket()
 	{
-		using var socket = new FakeSocket();
-		await using var connection = Create(() => socket);
+		using var first = new FakeSocket();
+		using var second = new FakeSocket();
+		var sockets = new Queue<FakeSocket>([first, second]);
+		await using var connection = Create(() => sockets.Dequeue());
 		var connector = new WireConnector(connection);
 		var selector = new TestSessionSelector();
 		var database = new TestSessionDatabase();
 		await selector.InitializeAsync();
 		await using var processor = new TextProcessor(selector, database, NullLogger<TextProcessor>.Instance);
 		var dialog = new DialogCoordinator(processor);
-		await using var model = new SessionModel(selector, database, dialog, connector, new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+		await using var model = new SessionModel(selector, database, dialog, connector, new ApplicationSettings(),
+			NullLogger<SessionModel>.Instance, new SessionRecoveryOptions { Delay = TimeSpan.Zero });
 		await model.InitializeAsync();
 		await processor.ProcessAsync(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Question"));
-		socket.Hold = true;
-		var first = model.SendRequestAsync(RequestType.Advice);
-		var second = model.SendRequestAsync(RequestType.Reply);
-		socket.Failure = "wrong_request_id";
-		socket.CompleteHeld(1);
-		await Assert.ThrowsAsync<InvalidDataException>(() => second);
-		socket.Failure = null;
-		socket.CompleteHeld(0);
-		Assert.NotNull(await first.WaitAsync(Timeout));
-		socket.Hold = false;
+		first.Hold = true;
+		var pending = model.SendRequestAsync(RequestType.Advice);
+		await connector.CancelAsync().WaitAsync(Timeout);
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+		await SessionModelTests.WaitUntilAsync(() => model.IsReady && second.Sent.Count == 2);
+		Assert.False(connector.IsBusy);
+		Assert.False(second.Sent[0].TryGetProperty("previous_response_id", out _));
+		first.CompleteHeld();
 		Assert.NotNull(await model.SendRequestAsync(RequestType.Translate));
-		Assert.Equal(socket.Id(3), socket.Sent.Last().GetProperty("previous_response_id").GetString());
+		Assert.Equal(second.Id(2), second.Sent.Last().GetProperty("previous_response_id").GetString());
+		Assert.Empty(sockets);
 	}
 
 	private sealed class WireConnector(ResponsesConnection connection) : ILLMConnector
 	{
+		public bool IsBusy => connection.IsBusy;
+		public Task CancelAsync(CancellationToken cancellationToken = default) => connection.CancelAsync(cancellationToken);
 		public event EventHandler? ConnectionLost
 		{
 			add => connection.ConnectionLost += value;
@@ -219,19 +307,28 @@ public sealed class ResponsesConnectionTests
 		internal readonly List<JsonElement> Sent = [];
 		internal readonly TaskCompletionSource Held = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		internal bool Hold;
+		internal Task? ConnectWait;
+		internal Task? ReceiveCloseWait;
+		private int _disposed;
+		internal int Disposals;
 		internal string? Failure;
+		internal Func<JsonElement, object>? ErrorEvent;
 		internal readonly List<(JsonElement Item, int Index)> HeldMessages = [];
 
 		internal string Id(int index) => _prefix + index;
-		public Task ConnectAsync(string accessToken, CancellationToken cancellationToken)
+		public async Task ConnectAsync(string accessToken, CancellationToken cancellationToken)
 		{
 			Assert.Equal("test-access-token", accessToken);
-			return Task.CompletedTask;
+			if (ConnectWait != null)
+			{
+				await ConnectWait.WaitAsync(cancellationToken);
+			}
 		}
 		public Task SendAsync(string message, CancellationToken cancellationToken)
 		{
 			using var document = JsonDocument.Parse(message);
 			var item = document.RootElement.Clone();
+			Assert.False(item.TryGetProperty("stream_id", out _));
 			Sent.Add(item);
 			if (Hold)
 			{
@@ -254,24 +351,33 @@ public sealed class ResponsesConnectionTests
 			}
 			catch (ChannelClosedException exception)
 			{
+				if (ReceiveCloseWait != null)
+				{
+					await ReceiveCloseWait;
+				}
 				throw exception.InnerException ?? new IOException("Socket closed.");
 			}
 		}
 		private void Complete(JsonElement item, int index)
 		{
 			var id = Id(index);
+			if (ErrorEvent != null)
+			{
+				_incoming.Writer.TryWrite(JsonSerializer.Serialize(ErrorEvent(item)));
+				return;
+			}
 			if (Failure is "previous_response_not_found" or "unauthorized")
 			{
-				_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "error", stream_id = item.GetProperty("stream_id").GetString(), status = Failure == "unauthorized" ? 401 : 400,
+				_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "error", status = Failure == "unauthorized" ? 401 : 400,
 					error = new { code = Failure } }));
 				return;
 			}
 			if (Failure is "response.failed" or "response.incomplete")
 			{
-				_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = Failure, stream_id = item.GetProperty("stream_id").GetString(), response = new { id } }));
+				_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = Failure, response = new { id } }));
 				return;
 			}
-			_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "response.created", stream_id = item.GetProperty("stream_id").GetString(), response = new { id } }));
+			_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "response.created", response = new { id } }));
 			object[] output = [];
 			if (!item.TryGetProperty("generate", out _))
 			{
@@ -291,9 +397,16 @@ public sealed class ResponsesConnectionTests
 					new { type = "output_text", text = Failure == "invalid_json" ? "{invalid" : JsonSerializer.Serialize(dto) };
 				output = [new { type = "message", content = new[] { content } }];
 			}
-			_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "response.completed", stream_id = item.GetProperty("stream_id").GetString(),
+			_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "response.completed",
 				response = new { id, status = "completed", output } }));
 		}
-		public void Dispose() => _incoming.Writer.TryComplete();
+		public void Dispose()
+		{
+			if (Interlocked.Exchange(ref _disposed, 1) == 0)
+			{
+				Disposals++;
+				_incoming.Writer.TryComplete();
+			}
+		}
 	}
 }

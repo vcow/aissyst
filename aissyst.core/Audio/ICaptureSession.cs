@@ -1,5 +1,3 @@
-using R3;
-
 namespace aissyst.core.Audio;
 
 public interface ICaptureSession
@@ -7,6 +5,6 @@ public interface ICaptureSession
 	Task InitializeAsync(CancellationToken cancellationToken = default);
 	AudioInputDevice? SelectedMicrophone { get; }
 	AudioApplication? SelectedApplication { get; }
-	Observable<IReadOnlyList<AudioFrame>> MicrophoneRecordObservable { get; }
-	Observable<IReadOnlyList<AudioFrame>> ApplicationRecordingObservable { get; }
+	event Action<IReadOnlyList<AudioFrame>>? MicrophoneRecordingCompleted;
+	event Action<IReadOnlyList<AudioFrame>>? ApplicationRecordingCompleted;
 }

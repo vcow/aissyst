@@ -8,7 +8,6 @@ using aissyst.core.LLMConnector;
 using aissyst.core.LLMConnector.DTO;
 using aissyst.core.LLMConnector.Model;
 using Microsoft.Extensions.Logging.Abstractions;
-using R3;
 
 namespace aissyst.tests;
 
@@ -22,8 +21,8 @@ public class ApplicationControllerTests
 		var processor = new TestTextProcessor();
 		await using var controller = Create(source, transcriber, processor);
 		await controller.InitializeAsync();
-		source.Microphone.OnNext(Frames(1));
-		source.Application.OnNext(Frames(2));
+		source.PublishMicrophone(Frames(1));
+		source.PublishApplication(Frames(2));
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 		Assert.Equal((AudioSourceType.Microphone, "Text 1"), await processor.Results.Reader.ReadAsync(timeout.Token));
 		Assert.Equal((AudioSourceType.Application, "Text 2"), await processor.Results.Reader.ReadAsync(timeout.Token));
@@ -61,16 +60,16 @@ public class ApplicationControllerTests
 			new ApplicationSettings(transcriptionQueueCapacity: overflow ? 1 : 10));
 		await controller.InitializeAsync();
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-		source.Microphone.OnNext(Frames(1));
+		source.PublishMicrophone(Frames(1));
 		await entered.Task.WaitAsync(timeout.Token);
-		source.Application.OnNext(Frames(2));
-		source.Application.OnNext(Frames(3));
+		source.PublishApplication(Frames(2));
+		source.PublishApplication(Frames(3));
 		if (!overflow)
 		{
 			Assert.Equal((2, 0), await controller.ClearQueues(timeout.Token));
 			Assert.False(activeToken.IsCancellationRequested);
 		}
-		source.Application.OnNext(Frames(4));
+		source.PublishApplication(Frames(4));
 		release.TrySetResult();
 		Assert.Equal((AudioSourceType.Microphone, "Text 1"), await processor.Results.Reader.ReadAsync(timeout.Token));
 		Assert.Equal((AudioSourceType.Application, "Text 4"), await processor.Results.Reader.ReadAsync(timeout.Token));
@@ -93,10 +92,11 @@ public class ApplicationControllerTests
 		};
 		await using var controller = Create(source, transcriber, new TestTextProcessor());
 		await controller.InitializeAsync();
-		source.Application.OnNext(Frames(1));
+		source.PublishApplication(Frames(1));
 		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		await controller.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 		await controller.DisposeAsync();
+		Assert.False(source.HasSubscribers);
 	}
 
 	[Fact]
@@ -109,17 +109,17 @@ public class ApplicationControllerTests
 		await using var controller = Create(source, transcriber, new TestTextProcessor(), output: output, connector: connector);
 		await controller.InitializeAsync();
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-		source.Microphone.OnNext(Frames(1));
+		source.PublishMicrophone(Frames(1));
 		await controller.WaitForIdleAsync(timeout.Token);
-		source.Microphone.OnNext(Frames(2));
+		source.PublishMicrophone(Frames(2));
 		await controller.WaitForIdleAsync(timeout.Token);
 		Assert.Empty(output.Messages);
-		source.Application.OnNext(Frames(3));
+		source.PublishApplication(Frames(3));
 		await controller.WaitForIdleAsync(timeout.Token);
 		var message = Assert.Single(output.Messages);
 		Assert.Equal(AudioSourceType.Microphone, message.Source);
 		Assert.Equal("Text 1 Text 2", message.Text);
-		source.Application.OnNext(Frames(4));
+		source.PublishApplication(Frames(4));
 		await controller.WaitForIdleAsync(timeout.Token);
 		Assert.Single(output.Messages);
 		Assert.Empty(output.Answers);
@@ -128,7 +128,7 @@ public class ApplicationControllerTests
 	}
 
 	[Fact]
-	public async Task NewAssistanceDoesNotCancelPreviousRequestAndIgnoresItsOlderResponse()
+	public async Task BusyAssistanceIsRejectedWithoutCancelingActiveRequest()
 	{
 		using var source = new TestCaptureSession();
 		var processor = new TestTextProcessor();
@@ -160,11 +160,13 @@ public class ApplicationControllerTests
 			var payload = await entered.Task.WaitAsync(timeout.Token);
 			await controller.WaitForIdleAsync(timeout.Token);
 			Assert.False(first.IsCompleted);
-			await controller.SendRequestAsync(RequestType.Reply, timeout.Token);
+			await Assert.ThrowsAsync<InvalidOperationException>(() => controller.SendRequestAsync(RequestType.Reply, timeout.Token));
 			Assert.False(cancelled.Task.IsCompleted);
-			release.TrySetResult(new DialogResponse { RequestId = payload.RequestId, Summary = "Obsolete summary.", Message = "Obsolete answer." });
+			Assert.Equal(1, connector.Requests);
+			release.TrySetResult(new DialogResponse { RequestId = payload.RequestId, Summary = payload.Summary, Message = "First answer." });
 			await first;
-			Assert.Equal("Latest answer.", Assert.Single(output.Answers));
+			await controller.SendRequestAsync(RequestType.Reply, timeout.Token);
+			Assert.Equal(new[] { "First answer.", "Latest answer." }, output.Answers);
 		}
 		finally
 		{
@@ -187,7 +189,7 @@ public class ApplicationControllerTests
 			NullLogger<ApplicationController>.Instance, new TestLLMConnector(), new TestOutput(),
 			new ApplicationSettings(), selector);
 		await controller.InitializeAsync();
-		source.Microphone.OnNext(Frames(1));
+		source.PublishMicrophone(Frames(1));
 		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		var idle = controller.WaitForIdleAsync();
 		Assert.False(idle.IsCompleted);
@@ -233,7 +235,7 @@ public class ApplicationControllerTests
 				throw new IOException("Offline");
 			}
 		};
-		source.Microphone.OnNext(Frames(1));
+		source.PublishMicrophone(Frames(1));
 		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		connector.Disconnect();
 		Assert.False(model.IsReady);
@@ -250,9 +252,9 @@ public class ApplicationControllerTests
 			Assert.Single(database.Session.Dialog);
 		}
 		database.BeforeAppend = null;
-		source.Application.OnNext(Frames(2));
+		source.PublishApplication(Frames(2));
 		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
-		source.Microphone.OnNext(Frames(3));
+		source.PublishMicrophone(Frames(3));
 		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
 		Assert.Equal(new[] { "Stored", "Text 1", "Text 2" }, output.Messages.Select(message => message.Text));
 	}
@@ -268,13 +270,14 @@ public class ApplicationControllerTests
 
 	private sealed class TestCaptureSession : ICaptureSession, IDisposable
 	{
-		internal readonly Subject<IReadOnlyList<AudioFrame>> Microphone = new();
-		internal readonly Subject<IReadOnlyList<AudioFrame>> Application = new();
 		internal bool Initialized;
 		public AudioInputDevice? SelectedMicrophone => null;
 		public AudioApplication? SelectedApplication => null;
-		public Observable<IReadOnlyList<AudioFrame>> MicrophoneRecordObservable => Microphone;
-		public Observable<IReadOnlyList<AudioFrame>> ApplicationRecordingObservable => Application;
+		public event Action<IReadOnlyList<AudioFrame>>? MicrophoneRecordingCompleted;
+		public event Action<IReadOnlyList<AudioFrame>>? ApplicationRecordingCompleted;
+		public bool HasSubscribers => MicrophoneRecordingCompleted != null || ApplicationRecordingCompleted != null;
+		public void PublishMicrophone(IReadOnlyList<AudioFrame> frames) => MicrophoneRecordingCompleted?.Invoke(frames);
+		public void PublishApplication(IReadOnlyList<AudioFrame> frames) => ApplicationRecordingCompleted?.Invoke(frames);
 		public Task InitializeAsync(CancellationToken cancellationToken = default)
 		{
 			Initialized = true;
@@ -282,8 +285,8 @@ public class ApplicationControllerTests
 		}
 		public void Dispose()
 		{
-			Microphone.Dispose();
-			Application.Dispose();
+			MicrophoneRecordingCompleted = null;
+			ApplicationRecordingCompleted = null;
 		}
 	}
 }

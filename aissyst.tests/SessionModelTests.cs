@@ -33,46 +33,29 @@ public sealed class SessionModelTests
 		Assert.Equal("Test context", fixture.Model.GetSession().Context[0].Body);
 	}
 
-	[Theory]
-	[InlineData(true)]
-	[InlineData(false)]
-	public async Task RequestOrderUsesLastAcceptedResponseAndMatchingContinuation(bool newerFirst)
+	[Fact]
+	public async Task BusyRequestIsRejectedAndNextRequestUsesAcceptedContinuation()
 	{
 		await using var fixture = new Fixture();
 		await fixture.InitializeAsync();
-		await fixture.Processor.ProcessAsync(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Question"));
-		var sent = Channel.CreateUnbounded<DialogRequest>();
-		var completions = new ConcurrentDictionary<int, TaskCompletionSource<DialogResponse>>();
-		fixture.Connector.Send = async (request, _) =>
+		var entered = new TaskCompletionSource<DialogRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = (request, _) => { entered.SetResult(request); return release.Task; };
+		var first = fixture.Model.SendRequestAsync(RequestType.Advice);
+		var sent = await entered.Task;
+		Assert.True(fixture.Connector.IsBusy);
+		await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Model.SendRequestAsync(RequestType.Reply));
+		Assert.Equal(1, fixture.Connector.Requests);
+		release.SetResult(Answer(sent));
+		Assert.NotNull(await first);
+		Assert.False(fixture.Connector.IsBusy);
+		fixture.Connector.Send = (request, _) =>
 		{
-			var completion = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-			completions[request.RequestId] = completion;
-			await sent.Writer.WriteAsync(request);
-			return await completion.Task;
+			Assert.True(request.RequestId > sent.RequestId);
+			return Task.FromResult(Answer(request));
 		};
-		var a = fixture.Model.SendRequestAsync(RequestType.Advice);
-		var requestA = await sent.Reader.ReadAsync();
-		var b = fixture.Model.SendRequestAsync(RequestType.Reply);
-		var requestB = await sent.Reader.ReadAsync();
-		Assert.True(requestB.RequestId > requestA.RequestId);
-		if (newerFirst)
-		{
-			completions[requestB.RequestId].SetResult(Answer(requestB, "B"));
-			Assert.Equal("B", (await b)!.Message);
-			completions[requestA.RequestId].SetResult(Answer(requestA, "A"));
-			Assert.Null(await a);
-		}
-		else
-		{
-			completions[requestA.RequestId].SetResult(Answer(requestA, "A"));
-			Assert.Equal("A", (await a)!.Message);
-			Assert.False(b.IsCompleted);
-			completions[requestB.RequestId].SetResult(Answer(requestB, "B"));
-			Assert.Equal("B", (await b)!.Message);
-		}
-		fixture.Connector.Send = (request, _) => Task.FromResult(Answer(request));
 		await fixture.Model.SendRequestAsync(RequestType.Translate);
-		Assert.Equal(requestB.RequestId.ToString(), ((TestContinuation)fixture.Connector.Parents.Last()).Id);
+		Assert.Equal(sent.RequestId.ToString(), ((TestContinuation)fixture.Connector.Parents.Last()).Id);
 	}
 
 	[Theory]
@@ -109,7 +92,7 @@ public sealed class SessionModelTests
 	}
 
 	[Fact]
-	public async Task LaterErrorDoesNotPreventEarlierValidResponse()
+	public async Task BusyRejectionDoesNotCancelActiveRequest()
 	{
 		await using var fixture = new Fixture();
 		await fixture.InitializeAsync();
@@ -174,7 +157,7 @@ public sealed class SessionModelTests
 		await WaitUntilAsync(() => fixture.Model.IsReady && fixture.Connector.Reconnects == 1);
 		Assert.Equal(1, redrawn);
 		release.SetResult(Answer(sent));
-		Assert.Null(await oldRequest);
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => oldRequest);
 		fixture.Connector.Send = (request, _) =>
 		{
 			Assert.Empty(request.RawRecords);
@@ -185,13 +168,16 @@ public sealed class SessionModelTests
 	}
 
 	[Fact]
-	public async Task ConcurrentRequestsHaveUniqueIncreasingIdentifiers()
+	public async Task SequentialRequestsHaveUniqueIncreasingIdentifiers()
 	{
 		await using var fixture = new Fixture();
 		await fixture.InitializeAsync();
 		var ids = new ConcurrentQueue<int>();
 		fixture.Connector.Send = (request, _) => { ids.Enqueue(request.RequestId); return Task.FromResult(Answer(request)); };
-		await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => Task.Run(() => fixture.Model.SendRequestAsync(RequestType.Reply))));
+		for (var index = 0; index < 100; index++)
+		{
+			await fixture.Model.SendRequestAsync(RequestType.Reply);
+		}
 		Assert.Equal(100, ids.Distinct().Count());
 	}
 
