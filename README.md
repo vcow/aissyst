@@ -39,6 +39,8 @@ Local transcription does not require sending audio to the LLM. Conversation text
 
 The solution uses .NET 10, Generic Host, dependency injection, and R3 for event-based coordination.
 
+`SessionModel` owns request snapshots, response validation, and the confirmed summary/continuation state. The connector returns parsed replies with opaque continuation leases and reports connection loss; it does not apply application state. `DialogCoordinator` serializes transcript processing and restoration and notifies the controller, which owns display updates.
+
 ## Database and context templates
 
 See [Database operation and context template authoring](aissyst.core/Database/README.md) for instructions on preparing a context template and an overview of session storage, import, and export.

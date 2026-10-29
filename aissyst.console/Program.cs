@@ -52,6 +52,8 @@ builder.Services.AddSingleton(new ConsoleHotkeySettings(
 builder.Services.AddSingleton<ConsoleCaptureSession>();
 builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 builder.Services.AddSingleton<ITextProcessor, TextProcessor>();
+builder.Services.AddSingleton<DialogCoordinator>();
+builder.Services.AddSingleton(new SessionRecoveryOptions());
 builder.Services.AddSingleton<IOutput, ConsoleOutput>();
 builder.Services.AddSingleton(new ChatGPTConnectorOptions());
 builder.Services.AddSingleton<IChatGPTAuthorization, LoopbackChatGPTAuthorization>();

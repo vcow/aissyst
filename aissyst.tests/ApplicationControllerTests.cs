@@ -145,12 +145,13 @@ public class ApplicationControllerTests
 				// Simulate a provider that finishes after cancellation was requested.
 				return await release.Task;
 			}
-			return new DialogResponse { RequestId = request.RequestId, Summary = "Latest summary.", Message = "Latest answer." };
+			return new DialogResponse { RequestId = request.RequestId, Summary = request.Summary, Message = "Latest answer." };
 		};
 		var output = new TestOutput();
-		await using var model = new SessionModel(processor.Selector, new TestSessionDatabase(), processor,
+		var dialog = new DialogCoordinator(processor);
+		await using var model = new SessionModel(processor.Selector, new TestSessionDatabase(), dialog,
 			connector, new ApplicationSettings(), NullLogger<SessionModel>.Instance);
-		await using var controller = Create(source, new TestTranscriber(), processor, connector: connector, output: output, model: model);
+		await using var controller = Create(source, new TestTranscriber(), processor, connector: connector, output: output, model: model, dialog: dialog);
 		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 		try
 		{
@@ -164,7 +165,6 @@ public class ApplicationControllerTests
 			release.TrySetResult(new DialogResponse { RequestId = payload.RequestId, Summary = "Obsolete summary.", Message = "Obsolete answer." });
 			await first;
 			Assert.Equal("Latest answer.", Assert.Single(output.Answers));
-			Assert.Equal("Latest summary.", model.GetRequest(RequestType.Summary).Summary);
 		}
 		finally
 		{
@@ -183,7 +183,7 @@ public class ApplicationControllerTests
 		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		database.BeforeAppend = async (_, token) => { entered.SetResult(); await release.Task.WaitAsync(token); };
 		var transcriber = new TestTranscriber { Recognize = (_, _) => Task.FromResult("  Original\nfragment  ") };
-		await using var controller = new ApplicationController(transcriber, processor, source,
+		await using var controller = new ApplicationController(transcriber, new DialogCoordinator(processor), source,
 			NullLogger<ApplicationController>.Instance, new TestLLMConnector(), new TestOutput(),
 			new ApplicationSettings(), selector);
 		await controller.InitializeAsync();
@@ -207,12 +207,19 @@ public class ApplicationControllerTests
 		var database = new TestSessionDatabase();
 		database.Session = database.Session with { Dialog = [new DialogRecord(DateTime.UtcNow.AddMinutes(-1), "interviewer", "Stored")] };
 		await using var processor = new TextProcessor(selector, database, NullLogger<TextProcessor>.Instance);
-		var connector = new RecoveryConnector();
+		var connector = new TestLLMConnector
+		{
+			Initialize = (session, _) => Task.FromResult(new DialogResponse
+			{
+				Summary = "Initial", SummaryTimestamp = session.Dialog.LastOrDefault()?.Timestamp
+			})
+		};
+		var dialog = new DialogCoordinator(processor);
 		var output = new TestOutput();
-		await using var model = new SessionModel(selector, database, processor, connector,
-			new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+		await using var model = new SessionModel(selector, database, dialog, connector,
+			new ApplicationSettings(), NullLogger<SessionModel>.Instance, new SessionRecoveryOptions { Delay = TimeSpan.Zero });
 		await using var controller = new ApplicationController(new TestTranscriber { Recognize = (frames, _) => Task.FromResult($"Text {frames[0].Samples.Span[0]}") },
-			processor, source, NullLogger<ApplicationController>.Instance, connector, output, new ApplicationSettings(), selector, model);
+			dialog, source, NullLogger<ApplicationController>.Instance, connector, output, new ApplicationSettings(), selector, model);
 		await controller.InitializeAsync();
 		Assert.Equal("Stored", Assert.Single(output.Messages).Text);
 		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -228,10 +235,11 @@ public class ApplicationControllerTests
 		};
 		source.Microphone.OnNext(Frames(1));
 		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-		var recovery = connector.Restore!(default);
-		Assert.False(recovery.IsCompleted);
+		connector.Disconnect();
+		Assert.False(model.IsReady);
 		release.SetResult();
-		var restored = await recovery.WaitAsync(TimeSpan.FromSeconds(5));
+		await SessionModelTests.WaitUntilAsync(() => model.IsReady && connector.Reconnects == 1);
+		var restored = model.GetSession();
 		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
 		Assert.Equal(new[] { "Stored", "Text 1" }, output.Messages.Select(message => message.Text));
 		Assert.Equal(2, output.ClearCalls);
@@ -249,22 +257,10 @@ public class ApplicationControllerTests
 		Assert.Equal(new[] { "Stored", "Text 1", "Text 2" }, output.Messages.Select(message => message.Text));
 	}
 
-	private sealed class RecoveryConnector : ILLMConnector, ILLMSessionLifecycle
-	{
-		internal Func<CancellationToken, Task<Session>>? Restore;
-		public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
-			Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse) => Restore = getSession;
-		public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-		public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
-			Task.FromResult(new DialogResponse { Summary = "Initial", SummaryTimestamp = session.Dialog.LastOrDefault()?.Timestamp });
-		public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
-			throw new NotSupportedException();
-	}
-
 	private static ApplicationController Create(TestCaptureSession source, TestTranscriber transcriber,
 		TestTextProcessor processor, ApplicationSettings? settings = null, TestOutput? output = null,
-		TestLLMConnector? connector = null, SessionModel? model = null) =>
-		new(transcriber, processor, source, NullLogger<ApplicationController>.Instance, connector ?? new TestLLMConnector(),
+		TestLLMConnector? connector = null, SessionModel? model = null, DialogCoordinator? dialog = null) =>
+		new(transcriber, dialog ?? new DialogCoordinator(processor), source, NullLogger<ApplicationController>.Instance, connector ?? new TestLLMConnector(),
 			output ?? new TestOutput(), settings ?? new ApplicationSettings(), processor.Selector, model);
 
 	private static IReadOnlyList<AudioFrame> Frames(float value) =>

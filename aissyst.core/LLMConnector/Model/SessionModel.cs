@@ -5,38 +5,55 @@ using Microsoft.Extensions.Logging;
 
 namespace aissyst.core.LLMConnector.Model;
 
-public class SessionModel : IAsyncDisposable
+public sealed class SessionModel : IAsyncDisposable
 {
+	private sealed record ConfirmedState(int RequestId, string Summary, DateTime SummaryTimestamp, ILLMContinuation Continuation);
 	private readonly ISessionSelector _sessionSelector;
 	private readonly IDatabase _database;
-	private readonly ITextProcessor _textProcessor;
-	private readonly ILLMConnector _llmConnector;
+	private readonly DialogCoordinator _dialog;
+	private readonly ILLMConnector _connector;
 	private readonly IApplicationSettings _settings;
 	private readonly ILogger<SessionModel> _logger;
+	private readonly SessionRecoveryOptions _recoveryOptions;
 	private readonly Lock _sync = new();
 	private readonly CancellationTokenSource _shutdown = new();
+	private readonly HashSet<Task> _requests = [];
 	private Task? _initialization;
+	private Task? _recovery;
 	private Task? _disposal;
-	private Func<CancellationToken, Task>? _restoreDialog;
+	private ConfirmedState? _state;
+	private string _instructions = string.Empty;
 	private string _preview = string.Empty;
-	private string _summary = string.Empty;
-	private DateTime _summaryTimestamp = DateTime.MinValue;
 	private SessionContextItem[] _context = [];
 	private bool _isReady;
+	private bool _recoveryRequested;
 	private static int _requestId;
-	private int _latestRequestId;
-	private int _lastAppliedRequestId;
-	private readonly Dictionary<int, DateTime?> _pendingSummaryTimestamps = [];
 
-	public SessionModel(ISessionSelector sessionSelector, IDatabase database, ITextProcessor textProcessor,
-		ILLMConnector llmConnector, IApplicationSettings settings, ILogger<SessionModel> logger)
+	public SessionModel(ISessionSelector sessionSelector, IDatabase database, DialogCoordinator dialog,
+		ILLMConnector connector, IApplicationSettings settings, ILogger<SessionModel> logger,
+		SessionRecoveryOptions? recoveryOptions = null)
 	{
 		_sessionSelector = sessionSelector;
 		_database = database;
-		_textProcessor = textProcessor;
-		_llmConnector = llmConnector;
+		_dialog = dialog;
+		_connector = connector;
 		_settings = settings;
 		_logger = logger;
+		_recoveryOptions = recoveryOptions ?? new SessionRecoveryOptions();
+		ArgumentOutOfRangeException.ThrowIfLessThan(_recoveryOptions.Attempts, 1);
+		ArgumentOutOfRangeException.ThrowIfLessThan(_recoveryOptions.Delay, TimeSpan.Zero);
+		_connector.ConnectionLost += OnConnectionLost;
+	}
+
+	public bool IsReady
+	{
+		get
+		{
+			lock (_sync)
+			{
+				return _isReady;
+			}
+		}
 	}
 
 	public Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -49,6 +66,10 @@ public class SessionModel : IAsyncDisposable
 			{
 				throw new InvalidOperationException("The session has already been initialized.");
 			}
+			if (_recovery is { IsCompleted: false })
+			{
+				throw new InvalidOperationException("The session is being recovered.");
+			}
 			if (_initialization == null || _initialization.IsCompleted)
 			{
 				_initialization = InitializeCoreAsync(cancellationToken);
@@ -60,43 +81,21 @@ public class SessionModel : IAsyncDisposable
 	private async Task InitializeCoreAsync(CancellationToken cancellationToken)
 	{
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-		var token = linked.Token;
 		try
 		{
-			var sessionId = _sessionSelector.GetSelectedSessionId();
-			var sessionContext = await _database.GetSessionAsync(sessionId, token);
-			await _textProcessor.InitializeAsync(token);
-			var session = new Session
-			{
-				Preview = sessionContext.Preview,
-				Context = sessionContext.Context.Select(record => new SessionContextItem
-					{ Topic = record.Topic, Body = record.Body }).ToArray(),
-				Dialog = Msg2DTO(_textProcessor.GetDialog(DateTime.MinValue)),
-				UseMdFormat = _settings.UseMarkdownFormat
-			};
-			if (_llmConnector is ILLMSessionLifecycle lifecycle)
-			{
-				var instructions = await _database.GetSessionInitialInstructionsAsync(sessionId, token);
-				lifecycle.ConfigureSession(instructions, RestoreSessionAsync, AcceptRecovery, Reset);
-			}
-			var response = await _llmConnector.InitializeSession(session, token);
-			if (!string.IsNullOrWhiteSpace(response.Error))
-			{
-				throw new InvalidOperationException($"LLM session initialization failed: {response.Error}");
-			}
-			ValidateSummary(response, session.Dialog.LastOrDefault()?.Timestamp);
+			var id = _sessionSelector.GetSelectedSessionId();
+			var context = await _database.GetSessionAsync(id, linked.Token);
+			var instructions = await _database.GetSessionInitialInstructionsAsync(id, linked.Token);
+			await _dialog.InitializeAsync(linked.Token);
 			lock (_sync)
 			{
-				token.ThrowIfCancellationRequested();
-				_preview = session.Preview;
-				_context = session.Context.Select(item => new SessionContextItem
-					{ Topic = item.Topic, Body = item.Body }).ToArray();
-				_summary = response.Summary;
-				_summaryTimestamp = response.SummaryTimestamp ?? DateTime.MinValue;
-				_isReady = true;
+				_preview = context.Preview;
+				_context = context.Context.Select(record => new SessionContextItem { Topic = record.Topic, Body = record.Body }).ToArray();
+				_instructions = instructions;
 			}
+			await InitializeRemoteSessionAsync(linked.Token);
 		}
-		catch (OperationCanceledException) when (token.IsCancellationRequested)
+		catch (OperationCanceledException) when (linked.IsCancellationRequested)
 		{
 			throw;
 		}
@@ -107,102 +106,128 @@ public class SessionModel : IAsyncDisposable
 		}
 	}
 
-	public bool Reset(DialogResponse response)
+	private async Task InitializeRemoteSessionAsync(CancellationToken cancellationToken)
+	{
+		Session session;
+		lock (_sync)
+		{
+			session = CreateSession();
+		}
+		var result = await _connector.InitializeSession(_instructions, session, cancellationToken);
+		var accepted = false;
+		try
+		{
+			ValidateResponse(result.Payload, session.RequestId, session.Dialog.LastOrDefault()?.Timestamp, null);
+			if (result.Payload.Message.Length != 0 || (session.Dialog.Count == 0 && result.Payload.Summary.Length != 0))
+			{
+				throw new InvalidDataException("Unexpected content in the session initialization response.");
+			}
+			lock (_sync)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				if (!result.Continuation.IsValid)
+				{
+					throw new IOException("The connection closed during session initialization.");
+				}
+				_state?.Continuation.Dispose();
+				_state = new ConfirmedState(session.RequestId, result.Payload.Summary,
+					result.Payload.SummaryTimestamp ?? DateTime.MinValue, result.Continuation);
+				_isReady = true;
+				accepted = true;
+			}
+		}
+		finally
+		{
+			if (!accepted)
+			{
+				result.Continuation.Dispose();
+			}
+		}
+	}
+
+	public Task<DialogResponse?> SendRequestAsync(RequestType request, CancellationToken cancellationToken = default)
 	{
 		lock (_sync)
 		{
 			EnsureReady();
-			if (response.RequestId <= _lastAppliedRequestId || !_pendingSummaryTimestamps.ContainsKey(response.RequestId))
+			cancellationToken.ThrowIfCancellationRequested();
+			if (!Enum.IsDefined(request))
 			{
-				_logger.LogDebug("Ignored an obsolete or duplicate LLM response for request {RequestId}.", response.RequestId);
-				return false;
+				throw new ArgumentOutOfRangeException(nameof(request), "The request type is not supported.");
 			}
-			if (!string.IsNullOrWhiteSpace(response.Error))
+			var payload = new DialogRequest
 			{
-				_logger.LogError("LLM request failed: {Error}", response.Error);
-				return false;
-			}
-			ValidateSummary(response, _pendingSummaryTimestamps[response.RequestId]);
-			if (_summary.Length != 0 && string.IsNullOrWhiteSpace(response.Summary))
-			{
-				throw new InvalidDataException("The LLM response cannot erase an existing dialog summary.");
-			}
-			_summary = response.Summary;
-			// An empty raw_records list does not reset the confirmed dialog boundary.
-			_summaryTimestamp = response.SummaryTimestamp ?? _summaryTimestamp;
-			_lastAppliedRequestId = response.RequestId;
-			foreach (var id in _pendingSummaryTimestamps.Keys.Where(id => id <= response.RequestId).ToArray())
-			{
-				_pendingSummaryTimestamps.Remove(id);
-			}
-			return true;
+				RequestId = Interlocked.Increment(ref _requestId), Request = request, Summary = _state!.Summary,
+				RawRecords = Msg2DTO(_dialog.GetDialog(_state.SummaryTimestamp))
+			};
+			var parent = _state.Continuation.Retain();
+			var operation = SendCoreAsync(payload, parent, cancellationToken);
+			_requests.Add(operation);
+			_ = ObserveRequestAsync(operation);
+			return operation;
 		}
 	}
 
-	public bool IsCurrentResponse(int requestId)
-	{
-		lock (_sync)
-		{
-			return requestId == _lastAppliedRequestId;
-		}
-	}
-
-	public void CompleteRequest(int requestId)
-	{
-		lock (_sync)
-		{
-			_pendingSummaryTimestamps.Remove(requestId);
-		}
-	}
-
-	internal void ConfigureDialogRestoration(Func<CancellationToken, Task> restoreDialog)
-	{
-		_restoreDialog = restoreDialog;
-	}
-
-	private async Task<Session> RestoreSessionAsync(CancellationToken cancellationToken)
+	private async Task<DialogResponse?> SendCoreAsync(DialogRequest request, ILLMContinuation parent, CancellationToken cancellationToken)
 	{
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
-		if (_restoreDialog != null)
+		LLMResponse? result = null;
+		var accepted = false;
+		try
 		{
-			await _restoreDialog(linked.Token);
+			result = await _connector.SendRequest(request, parent, linked.Token);
+			lock (_sync)
+			{
+				linked.Token.ThrowIfCancellationRequested();
+				if (!_isReady || _state == null || !result.Continuation.IsValid || !ReferenceEquals(parent.ConnectionId, _state.Continuation.ConnectionId)
+					|| !ReferenceEquals(result.Continuation.ConnectionId, parent.ConnectionId) || request.RequestId <= _state.RequestId)
+				{
+					return null;
+				}
+				ValidateResponse(result.Payload, request.RequestId, request.RawRecords.LastOrDefault()?.Timestamp, request.Summary);
+				var old = _state;
+				_state = new ConfirmedState(request.RequestId, result.Payload.Summary,
+					result.Payload.SummaryTimestamp ?? old.SummaryTimestamp, result.Continuation);
+				accepted = true;
+				old.Continuation.Dispose();
+				return result.Payload;
+			}
 		}
-		else if (_textProcessor is IReloadableTextProcessor reloadable)
+		catch (OperationCanceledException) when (linked.IsCancellationRequested)
 		{
-			await reloadable.ReloadAsync(linked.Token);
+			throw;
 		}
-		linked.Token.ThrowIfCancellationRequested();
-		return GetSession();
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "LLM assistance request {RequestId} failed.", request.RequestId);
+			throw;
+		}
+		finally
+		{
+			parent.Dispose();
+			if (!accepted)
+			{
+				result?.Continuation.Dispose();
+			}
+		}
 	}
 
-	private void AcceptRecovery(Session session, DialogResponse response)
+	private static void ValidateResponse(DialogResponse response, int requestId, DateTime? expectedTimestamp, string? previousSummary)
 	{
-		lock (_sync)
+		if (response.RequestId != requestId)
 		{
-			EnsureReady();
-			ValidateSummary(response, session.Dialog.LastOrDefault()?.Timestamp);
-			_summary = response.Summary;
-			_summaryTimestamp = response.SummaryTimestamp ?? DateTime.MinValue;
-			// Requests prepared before recovery must not overwrite the reconstructed state.
-			_latestRequestId = Interlocked.Increment(ref _requestId);
-			_lastAppliedRequestId = _latestRequestId;
-			_pendingSummaryTimestamps.Clear();
+			throw new InvalidDataException("The LLM response request_id does not match the submitted request.");
 		}
-	}
-
-	private static void ValidateSummary(DialogResponse response, DateTime? expectedTimestamp)
-	{
-		if (response.Summary == null)
+		if (!string.IsNullOrWhiteSpace(response.Error))
 		{
-			throw new InvalidDataException("The LLM summary must be a string.");
+			throw new InvalidOperationException($"The model reported an error: {response.Error}");
 		}
-		if (response.SummaryTimestamp != expectedTimestamp)
+		if (response.Summary == null || response.Message == null || response.SummaryTimestamp != expectedTimestamp
+			|| (expectedTimestamp.HasValue && string.IsNullOrWhiteSpace(response.Summary))
+			|| (!string.IsNullOrEmpty(previousSummary) && string.IsNullOrWhiteSpace(response.Summary))
+			|| (!expectedTimestamp.HasValue && previousSummary != null && response.Summary != previousSummary))
 		{
-			throw new InvalidDataException("The LLM summary timestamp does not match the submitted dialog boundary.");
-		}
-		if (expectedTimestamp.HasValue && string.IsNullOrWhiteSpace(response.Summary))
-		{
-			throw new InvalidDataException("The LLM returned an empty summary for a non-empty dialog.");
+			throw new InvalidDataException("The LLM response does not match the submitted dialog state.");
 		}
 	}
 
@@ -211,20 +236,20 @@ public class SessionModel : IAsyncDisposable
 		lock (_sync)
 		{
 			EnsureReady();
-			return new Session
-			{
-				Preview = _preview,
-				Context = _context.Select(item => new SessionContextItem { Topic = item.Topic, Body = item.Body }).ToArray(),
-				Dialog = Msg2DTO(_textProcessor.GetDialog(DateTime.MinValue)),
-				UseMdFormat = _settings.UseMarkdownFormat
-			};
+			return CreateSession();
 		}
 	}
 
+	private Session CreateSession() => new()
+	{
+		RequestId = Interlocked.Increment(ref _requestId), Preview = _preview,
+		Context = _context.Select(item => new SessionContextItem { Topic = item.Topic, Body = item.Body }).ToArray(),
+		Dialog = Msg2DTO(_dialog.GetDialog(DateTime.MinValue)), UseMdFormat = _settings.UseMarkdownFormat
+	};
+
 	private static DialogItem[] Msg2DTO(IEnumerable<DialogMessage> messages) => messages.Select(message => new DialogItem
 	{
-		Message = message.Text,
-		Timestamp = message.Timestamp,
+		Message = message.Text, Timestamp = message.Timestamp,
 		Role = message.Source switch
 		{
 			AudioSourceType.Microphone => SenderRole.Interviewee,
@@ -233,19 +258,79 @@ public class SessionModel : IAsyncDisposable
 		}
 	}).ToArray();
 
-	public DialogRequest GetRequest(RequestType request)
+	private void OnConnectionLost(object? sender, EventArgs args)
 	{
 		lock (_sync)
 		{
-			EnsureReady();
-			if (!Enum.IsDefined(request))
+			if (_disposal != null || _state == null)
 			{
-				throw new ArgumentOutOfRangeException(nameof(request), "The request type is not supported.");
+				return;
 			}
-			var records = Msg2DTO(_textProcessor.GetDialog(_summaryTimestamp));
-			_latestRequestId = Interlocked.Increment(ref _requestId);
-			_pendingSummaryTimestamps[_latestRequestId] = records.LastOrDefault()?.Timestamp;
-			return new DialogRequest { RequestId = _latestRequestId, Request = request, Summary = _summary, RawRecords = records };
+			_isReady = false;
+			if (_recovery is { IsCompleted: false })
+			{
+				_recoveryRequested = true;
+				return;
+			}
+			_recovery = Task.Run(RecoverAsync);
+		}
+	}
+
+	private async Task RecoverAsync()
+	{
+		var restored = false;
+		try
+		{
+			for (var attempt = 1; ; attempt++)
+			{
+				try
+				{
+					lock (_sync)
+					{
+						_recoveryRequested = false;
+					}
+					await Task.Delay(_recoveryOptions.Delay, _shutdown.Token);
+					await _connector.ReconnectAsync(_shutdown.Token);
+					await _dialog.ReloadAsync(_shutdown.Token);
+					await InitializeRemoteSessionAsync(_shutdown.Token);
+					lock (_sync)
+					{
+						if (!_isReady || _state == null || !_state.Continuation.IsValid)
+						{
+							throw new IOException("The connection closed while completing session recovery.");
+						}
+						restored = true;
+					}
+					_logger.LogInformation("The LLM connection and session have been restored. You can submit a new request.");
+					return;
+				}
+				catch (Exception exception) when (!_shutdown.IsCancellationRequested)
+				{
+					_logger.LogWarning(exception, "LLM recovery attempt {Attempt} failed.", attempt);
+					if (attempt >= _recoveryOptions.Attempts || exception is UnauthorizedAccessException or InvalidDataException)
+					{
+						throw;
+					}
+				}
+			}
+		}
+		catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+		{
+		}
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "LLM recovery failed. Restart the application to reconnect.");
+		}
+		finally
+		{
+			lock (_sync)
+			{
+				if (restored && _recoveryRequested && _disposal == null && !_shutdown.IsCancellationRequested)
+				{
+					_recoveryRequested = false;
+					_recovery = Task.Run(RecoverAsync);
+				}
+			}
 		}
 	}
 
@@ -254,7 +339,26 @@ public class SessionModel : IAsyncDisposable
 		ObjectDisposedException.ThrowIf(_disposal != null, this);
 		if (!_isReady)
 		{
-			throw new InvalidOperationException("The session has not been initialized.");
+			throw new InvalidOperationException("The LLM session is not ready. Retry after recovery.");
+		}
+	}
+
+	private async Task ObserveRequestAsync(Task operation)
+	{
+		try
+		{
+			await operation;
+		}
+		catch (Exception)
+		{
+			// SendCoreAsync already logs failures; disposal only needs to await completion.
+		}
+		finally
+		{
+			lock (_sync)
+			{
+				_requests.Remove(operation);
+			}
 		}
 	}
 
@@ -269,24 +373,25 @@ public class SessionModel : IAsyncDisposable
 	private async Task DisposeCoreAsync()
 	{
 		_isReady = false;
+		_connector.ConnectionLost -= OnConnectionLost;
 		await _shutdown.CancelAsync();
-		try
+		if (_initialization != null)
 		{
-			if (_initialization != null)
-			{
-				await _initialization;
-			}
+			try { await _initialization; }
+			catch (Exception) { /* Initialization already logs failures. */ }
 		}
-		catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+		if (_recovery != null)
 		{
+			await _recovery;
 		}
-		catch (Exception)
+		Task[] requests;
+		lock (_sync)
 		{
-			// InitializeCoreAsync already logged initialization failures.
+			requests = _requests.ToArray();
 		}
-		finally
-		{
-			_shutdown.Dispose();
-		}
+		try { await Task.WhenAll(requests); }
+		catch (Exception) { /* Individual requests already log failures. */ }
+		_state?.Continuation.Dispose();
+		_shutdown.Dispose();
 	}
 }

@@ -1,8 +1,9 @@
-using aissyst.console;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
 using aissyst.core;
+using aissyst.console;
 using aissyst.core.Database;
 using aissyst.core.LLMConnector.DTO;
-using aissyst.core.LLMConnector;
 using aissyst.core.LLMConnector.Model;
 using aissyst.core.Processor;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,235 +13,294 @@ namespace aissyst.tests;
 public sealed class SessionModelTests
 {
 	[Fact]
-	public async Task InitializationSelectsOnceAndSendsRestoredDialogAndContextToLlm()
+	public async Task InitializationLoadsInstructionsAndRestoredDialogAndUsesOneSnapshot()
 	{
+		await using var fixture = new Fixture();
 		var timestamp = DateTime.UtcNow;
-		var database = new TestSessionDatabase();
-		database.Session = database.Session with { Dialog = [new DialogRecord(timestamp, "interviewer", "Stored question.")] };
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		var connector = new TestLLMConnector
+		fixture.Database.Session = fixture.Database.Session with { Dialog = [new DialogRecord(timestamp, "interviewer", "Stored")] };
+		await fixture.InitializeAsync();
+		Assert.Equal("Test initial instructions", fixture.Connector.Instructions);
+		Assert.Equal(1, fixture.Selector.Calls);
+		Assert.Equal("Stored", Assert.Single(fixture.Model.GetSession().Dialog).Message);
+		DialogRequest? sent = null;
+		fixture.Connector.Send = (request, _) => { sent = request; return Task.FromResult(Answer(request)); };
+		await fixture.Model.SendRequestAsync(RequestType.Reply);
+		Assert.Empty(sent!.RawRecords);
+		Assert.Equal("Restored", sent.Summary);
+		await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Model.InitializeAsync());
+		var snapshot = fixture.Model.GetSession();
+		snapshot.Context[0].Body = "Changed";
+		Assert.Equal("Test context", fixture.Model.GetSession().Context[0].Body);
+	}
+
+	[Theory]
+	[InlineData(true)]
+	[InlineData(false)]
+	public async Task RequestOrderUsesLastAcceptedResponseAndMatchingContinuation(bool newerFirst)
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		await fixture.Processor.ProcessAsync(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Question"));
+		var sent = Channel.CreateUnbounded<DialogRequest>();
+		var completions = new ConcurrentDictionary<int, TaskCompletionSource<DialogResponse>>();
+		fixture.Connector.Send = async (request, _) =>
 		{
-			Initialize = (session, _) =>
-			{
-				Assert.True(processor.IsReady);
-				Assert.Equal("Test preview", session.Preview);
-				Assert.Equal("Background", Assert.Single(session.Context).Topic);
-				Assert.Equal(SenderRole.Interviewer, Assert.Single(session.Dialog).Role);
-				Assert.Equal("Stored question.", session.Dialog[0].Message);
-				return Task.FromResult(new DialogResponse { Summary = "Initial summary.", SummaryTimestamp = timestamp });
-			}
+			var completion = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+			completions[request.RequestId] = completion;
+			await sent.Writer.WriteAsync(request);
+			return await completion.Task;
 		};
-		await using var model = Create(selector, database, processor, connector);
-		await model.InitializeAsync();
-		Assert.Equal(1, selector.Calls);
-		Assert.All(database.RequestedSessions, id => Assert.Equal(7, id));
-		Assert.Equal(1, connector.SessionInitializations);
-		var request = model.GetRequest(RequestType.Advice);
-		Assert.Equal("Initial summary.", request.Summary);
-		Assert.Empty(request.RawRecords);
-		Assert.Single(model.GetSession().Dialog);
-		await Assert.ThrowsAsync<InvalidOperationException>(() => model.InitializeAsync());
-	}
-
-	[Fact]
-	public async Task EmptyDialogAcceptsMissingSummaryTimestampAndOnlyLatestRequestCanUpdateSummary()
-	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		await using var model = Create(selector, database, processor, SuccessfulConnector());
-		await model.InitializeAsync();
-		Assert.Empty(model.GetSession().Dialog);
-		var timestamp = DateTime.UtcNow;
-		processor.Process(new DialogMessage(timestamp, AudioSourceType.Application, "Question."));
-		var older = model.GetRequest(RequestType.Translate);
-		var newer = model.GetRequest(RequestType.Reply);
-		Assert.True(newer.RequestId > older.RequestId);
-		model.Reset(new DialogResponse { RequestId = older.RequestId, Summary = "Stale.", SummaryTimestamp = timestamp });
-		model.Reset(new DialogResponse { RequestId = newer.RequestId, Summary = "Accepted.", SummaryTimestamp = timestamp });
-		model.Reset(new DialogResponse { RequestId = newer.RequestId, Summary = "Duplicate.", SummaryTimestamp = timestamp });
-		var emptyRequest = model.GetRequest(RequestType.Advice);
-		Assert.Equal("Accepted.", emptyRequest.Summary);
-		Assert.Empty(emptyRequest.RawRecords);
-		model.Reset(new DialogResponse { RequestId = emptyRequest.RequestId, Summary = "Updated without new dialog." });
-		Assert.Empty(model.GetRequest(RequestType.Summary).RawRecords);
-	}
-
-	[Fact]
-	public async Task ResponseBoundaryIsValidatedAgainstSentSnapshotAndNewerMessagesRemainRaw()
-	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		await using var model = Create(selector, database, processor, SuccessfulConnector());
-		await model.InitializeAsync();
-		var timestamp = DateTime.UtcNow;
-		processor.Process(new DialogMessage(timestamp, AudioSourceType.Application, "First."));
-		var request = model.GetRequest(RequestType.Advice);
-		processor.Process(new DialogMessage(timestamp.AddSeconds(1), AudioSourceType.Application, "Continuation."));
-		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse
+		var a = fixture.Model.SendRequestAsync(RequestType.Advice);
+		var requestA = await sent.Reader.ReadAsync();
+		var b = fixture.Model.SendRequestAsync(RequestType.Reply);
+		var requestB = await sent.Reader.ReadAsync();
+		Assert.True(requestB.RequestId > requestA.RequestId);
+		if (newerFirst)
 		{
-			RequestId = request.RequestId, Summary = "Invalid future boundary.", SummaryTimestamp = timestamp.AddSeconds(1)
-		}));
-		model.Reset(new DialogResponse { RequestId = request.RequestId, Summary = "First only.", SummaryTimestamp = timestamp });
-		var next = model.GetRequest(RequestType.Reply);
-		Assert.Equal("First only.", next.Summary);
-		Assert.Equal("Continuation.", Assert.Single(next.RawRecords).Message);
-	}
-
-	[Fact]
-	public async Task LlmFailureDoesNotMarkModelReadyAndInitializationCanBeRetried()
-	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		var connector = new TestLLMConnector { Initialize = (_, _) => Task.FromResult(new DialogResponse { Error = "Provider failure." }) };
-		await using var model = Create(selector, database, processor, connector);
-		await Assert.ThrowsAsync<InvalidOperationException>(() => model.InitializeAsync());
-		Assert.Throws<InvalidOperationException>(() => model.GetSession());
-		connector.Initialize = (_, _) => Task.FromResult(new DialogResponse());
-		await model.InitializeAsync();
-		Assert.Empty(model.GetSession().Dialog);
-	}
-
-	[Fact]
-	public async Task ConcurrentInitializationAndDisposalShareOneOperationAndPropagateCancellationToLlm()
-	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-		var connector = new TestLLMConnector
+			completions[requestB.RequestId].SetResult(Answer(requestB, "B"));
+			Assert.Equal("B", (await b)!.Message);
+			completions[requestA.RequestId].SetResult(Answer(requestA, "A"));
+			Assert.Null(await a);
+		}
+		else
 		{
-			Initialize = async (_, cancellationToken) =>
+			completions[requestA.RequestId].SetResult(Answer(requestA, "A"));
+			Assert.Equal("A", (await a)!.Message);
+			Assert.False(b.IsCompleted);
+			completions[requestB.RequestId].SetResult(Answer(requestB, "B"));
+			Assert.Equal("B", (await b)!.Message);
+		}
+		fixture.Connector.Send = (request, _) => Task.FromResult(Answer(request));
+		await fixture.Model.SendRequestAsync(RequestType.Translate);
+		Assert.Equal(requestB.RequestId.ToString(), ((TestContinuation)fixture.Connector.Parents.Last()).Id);
+	}
+
+	[Theory]
+	[InlineData("request_id")]
+	[InlineData("timestamp")]
+	[InlineData("summary")]
+	[InlineData("error")]
+	public async Task InvalidResponseDoesNotAdvanceSummaryBoundaryOrContinuation(string fault)
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		await fixture.Processor.ProcessAsync(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Question"));
+		fixture.Connector.Send = (request, _) =>
+		{
+			var response = Answer(request);
+			switch (fault)
 			{
-				entered.TrySetResult();
-				await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-				return new DialogResponse();
+				case "request_id": response.RequestId++; break;
+				case "timestamp": response.SummaryTimestamp = DateTime.UtcNow.AddDays(1); break;
+				case "summary": response.Summary = ""; break;
+				case "error": response.Error = "Failure"; break;
 			}
+			return Task.FromResult(response);
 		};
-		var model = Create(selector, database, processor, connector);
-		var first = model.InitializeAsync();
-		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-		var second = model.InitializeAsync();
-		await model.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
-		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
-		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
-		await model.DisposeAsync();
-		Assert.Equal(1, selector.Calls);
-		Assert.Equal(1, connector.SessionInitializations);
-		Assert.Throws<ObjectDisposedException>(() => model.GetSession());
+		await Assert.ThrowsAnyAsync<Exception>(() => fixture.Model.SendRequestAsync(RequestType.Reply));
+		fixture.Connector.Send = (request, _) =>
+		{
+			Assert.Equal("", request.Summary);
+			Assert.Equal("Question", Assert.Single(request.RawRecords).Message);
+			return Task.FromResult(Answer(request));
+		};
+		await fixture.Model.SendRequestAsync(RequestType.Reply);
+		Assert.All(fixture.Connector.Parents, parent => Assert.Equal("session", ((TestContinuation)parent).Id));
+	}
+
+	[Fact]
+	public async Task LaterErrorDoesNotPreventEarlierValidResponse()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var first = new TaskCompletionSource<DialogRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = (request, _) =>
+		{
+			if (request.Request == RequestType.Advice)
+			{
+				first.SetResult(request);
+				return release.Task;
+			}
+			return Task.FromResult(new DialogResponse { RequestId = request.RequestId, Error = "B failed" });
+		};
+		var a = fixture.Model.SendRequestAsync(RequestType.Advice);
+		var sentA = await first.Task;
+		await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Model.SendRequestAsync(RequestType.Reply));
+		release.SetResult(Answer(sentA));
+		Assert.NotNull(await a);
+	}
+
+	[Fact]
+	public async Task ResponseBoundaryUsesSentSnapshotAndLaterFragmentsRemainRaw()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var timestamp = DateTime.UtcNow;
+		await fixture.Processor.ProcessAsync(new DialogMessage(timestamp, AudioSourceType.Application, "First"));
+		fixture.Connector.Send = async (request, _) =>
+		{
+			await fixture.Processor.ProcessAsync(new DialogMessage(timestamp.AddSeconds(1), AudioSourceType.Application, "Later"));
+			Assert.Equal("First", Assert.Single(request.RawRecords).Message);
+			return Answer(request);
+		};
+		await fixture.Model.SendRequestAsync(RequestType.Reply);
+		fixture.Connector.Send = (request, _) =>
+		{
+			Assert.Equal("Later", Assert.Single(request.RawRecords).Message);
+			return Task.FromResult(Answer(request));
+		};
+		await fixture.Model.SendRequestAsync(RequestType.Reply);
+	}
+
+	[Fact]
+	public async Task RecoveryReloadsDatabaseAndUnsavedFragmentsAndRejectsPreviousConnectionReply()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var timestamp = DateTime.UtcNow;
+		await fixture.Processor.ProcessAsync(new DialogMessage(timestamp, AudioSourceType.Application, "Old"));
+		var entered = new TaskCompletionSource<DialogRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource<DialogResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = (request, _) => { entered.SetResult(request); return release.Task; };
+		var oldRequest = fixture.Model.SendRequestAsync(RequestType.Reply);
+		var sent = await entered.Task;
+		fixture.Database.Session = fixture.Database.Session with { Dialog = [new DialogRecord(timestamp, "interviewer", "Database replacement")] };
+		fixture.Database.BeforeAppend = (_, _) => Task.FromException(new IOException("Offline"));
+		await fixture.Processor.ProcessAsync(new DialogMessage(timestamp.AddSeconds(1), AudioSourceType.Microphone, "Unsaved"));
+		var redrawn = 0;
+		fixture.Dialog.HistoryReplaced += messages => { Assert.Equal(2, messages.Count); redrawn++; };
+		fixture.Connector.Disconnect();
+		await WaitUntilAsync(() => fixture.Model.IsReady && fixture.Connector.Reconnects == 1);
+		Assert.Equal(1, redrawn);
+		release.SetResult(Answer(sent));
+		Assert.Null(await oldRequest);
+		fixture.Connector.Send = (request, _) =>
+		{
+			Assert.Empty(request.RawRecords);
+			Assert.Equal("Restored", request.Summary);
+			return Task.FromResult(Answer(request));
+		};
+		await fixture.Model.SendRequestAsync(RequestType.Reply);
 	}
 
 	[Fact]
 	public async Task ConcurrentRequestsHaveUniqueIncreasingIdentifiers()
 	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		await using var model = Create(selector, database, processor, SuccessfulConnector());
-		await model.InitializeAsync();
-		var requests = await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => Task.Run(() => model.GetRequest(RequestType.Reply))));
-		Assert.Equal(100, requests.Select(request => request.RequestId).Distinct().Count());
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var ids = new ConcurrentQueue<int>();
+		fixture.Connector.Send = (request, _) => { ids.Enqueue(request.RequestId); return Task.FromResult(Answer(request)); };
+		await Task.WhenAll(Enumerable.Range(0, 100).Select(_ => Task.Run(() => fixture.Model.SendRequestAsync(RequestType.Reply))));
+		Assert.Equal(100, ids.Distinct().Count());
 	}
 
 	[Fact]
-	public async Task EmptyOrErrorResponseCannotEraseExistingSummary()
+	public async Task DisposalCancelsRequestAndIsIdempotent()
 	{
-		var database = new TestSessionDatabase();
-		database.Session = database.Session with { Dialog = [new DialogRecord(DateTime.UtcNow, "interviewer", "Stored question.")] };
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		await using var model = Create(selector, database, processor, SuccessfulConnector());
-		await model.InitializeAsync();
-		var request = model.GetRequest(RequestType.Advice);
-		model.Reset(new DialogResponse { RequestId = request.RequestId, Error = "Temporary failure." });
-		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = request.RequestId }));
-		Assert.Equal("Initial summary.", model.GetRequest(RequestType.Reply).Summary);
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = async (_, token) => { entered.SetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); return new DialogResponse(); };
+		var request = fixture.Model.SendRequestAsync(RequestType.Reply);
+		await entered.Task;
+		await fixture.Model.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+		await fixture.Model.DisposeAsync();
+		await Assert.ThrowsAsync<ObjectDisposedException>(() => fixture.Model.SendRequestAsync(RequestType.Reply));
 	}
 
 	[Fact]
-	public async Task RecoveryUsesFreshDialogAndReplacesSummaryWithoutLosingLaterFragments()
+	public async Task ConcurrentInitializationAndDisposalCancelTheSingleRemoteInitialization()
 	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		var connector = new LifecycleConnector();
-		await using var model = new SessionModel(selector, database, processor, connector,
-			new ApplicationSettings(), NullLogger<SessionModel>.Instance);
-		await model.InitializeAsync();
-		Assert.Equal("Test initial instructions", connector.Instructions);
-		var first = DateTime.UtcNow;
-		processor.Process(new DialogMessage(first, AudioSourceType.Application, "First"));
-		var obsolete = model.GetRequest(RequestType.Reply);
-		database.Session = database.Session with { Dialog = [new DialogRecord(first, "interviewer", "Database replacement")] };
-		var snapshot = await connector.GetSession!(default);
-		Assert.Equal("Database replacement", Assert.Single(snapshot.Dialog).Message);
-		processor.Process(new DialogMessage(first.AddSeconds(1), AudioSourceType.Application, "Later"));
-		connector.AcceptRecovery!(snapshot, new DialogResponse { Summary = "Rebuilt summary", SummaryTimestamp = first });
-		Assert.False(connector.AcceptResponse!(new DialogResponse { RequestId = obsolete.RequestId, Summary = "Old", SummaryTimestamp = first }));
-		var next = model.GetRequest(RequestType.Reply);
-		Assert.Equal("Rebuilt summary", next.Summary);
-		Assert.Equal("Later", Assert.Single(next.RawRecords).Message);
-		Assert.True(connector.AcceptResponse!(new DialogResponse { RequestId = next.RequestId, Summary = "Current", SummaryTimestamp = first.AddSeconds(1) }));
-		Assert.Empty(model.GetRequest(RequestType.Summary).RawRecords);
-	}
-
-	private sealed class LifecycleConnector : ILLMConnector, ILLMSessionLifecycle
-	{
-		internal string? Instructions;
-		internal Func<CancellationToken, Task<Session>>? GetSession;
-		internal Action<Session, DialogResponse>? AcceptRecovery;
-		internal Func<DialogResponse, bool>? AcceptResponse;
-		public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
-			Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse)
+		await using var fixture = new Fixture();
+		await fixture.Selector.InitializeAsync();
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Initialize = async (_, token) =>
 		{
-			Instructions = instructions;
-			GetSession = getSession;
-			AcceptRecovery = acceptRecovery;
-			AcceptResponse = acceptResponse;
+			entered.SetResult();
+			await Task.Delay(Timeout.InfiniteTimeSpan, token);
+			return new DialogResponse();
+		};
+		var first = fixture.Model.InitializeAsync();
+		await entered.Task;
+		var second = fixture.Model.InitializeAsync();
+		await fixture.Model.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
+		Assert.Equal(1, fixture.Connector.SessionInitializations);
+	}
+
+	[Fact]
+	public async Task FailedInitializationCanBeRetriedWithoutPublishingReadyState()
+	{
+		await using var fixture = new Fixture();
+		await fixture.Selector.InitializeAsync();
+		fixture.Connector.Initialize = (_, _) => Task.FromResult(new DialogResponse { Error = "Failure" });
+		await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Model.InitializeAsync());
+		Assert.False(fixture.Model.IsReady);
+		fixture.Connector.Initialize = (_, _) => Task.FromResult(new DialogResponse());
+		await fixture.Model.InitializeAsync();
+		Assert.True(fixture.Model.IsReady);
+	}
+
+	[Fact]
+	public async Task RecoveryFailuresAreBoundedEvenIfEveryAttemptLosesConnection()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var attempts = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Initialize = (_, _) =>
+		{
+			fixture.Connector.Disconnect();
+			if (fixture.Connector.Reconnects == 3)
+			{
+				attempts.TrySetResult();
+			}
+			return Task.FromException<DialogResponse>(new IOException("Repeated disconnect"));
+		};
+		fixture.Connector.Disconnect();
+		await attempts.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		await fixture.Model.DisposeAsync();
+		Assert.Equal(3, fixture.Connector.Reconnects);
+		Assert.False(fixture.Model.IsReady);
+	}
+
+	internal static async Task WaitUntilAsync(Func<bool> condition)
+	{
+		using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+		while (!condition())
+		{
+			await Task.Delay(10, timeout.Token);
 		}
-		public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-		public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
-			Task.FromResult(new DialogResponse());
-		public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
-			throw new NotSupportedException();
 	}
 
-	[Fact]
-	public async Task OlderValidResponseIsAcceptedWhileNewerRequestIsPendingOrFailed()
+	private static DialogResponse Answer(DialogRequest request, string message = "Answer") => new()
 	{
-		var database = new TestSessionDatabase();
-		var selector = new TestSessionSelector();
-		await using var processor = await TextProcessorInitializationTests.CreateAsync(selector, database);
-		await using var model = Create(selector, database, processor, SuccessfulConnector());
-		await model.InitializeAsync();
-		var firstTime = DateTime.UtcNow;
-		await processor.ProcessAsync(new DialogMessage(firstTime, AudioSourceType.Application, "First"));
-		var first = model.GetRequest(RequestType.Advice);
-		await processor.ProcessAsync(new DialogMessage(firstTime.AddSeconds(1), AudioSourceType.Microphone, "Second"));
-		var second = model.GetRequest(RequestType.Reply);
-		Assert.False(model.Reset(new DialogResponse { RequestId = second.RequestId, Error = "Failed" }));
-		Assert.True(model.Reset(new DialogResponse { RequestId = first.RequestId, Summary = "First summary", SummaryTimestamp = firstTime }));
-		var next = model.GetRequest(RequestType.Translate);
-		Assert.Equal("First summary", next.Summary);
-		Assert.Equal("Second", Assert.Single(next.RawRecords).Message);
-		Assert.Throws<InvalidDataException>(() => model.Reset(new DialogResponse { RequestId = second.RequestId, Summary = "Bad", SummaryTimestamp = firstTime }));
-		Assert.True(model.Reset(new DialogResponse { RequestId = second.RequestId, Summary = "Both", SummaryTimestamp = firstTime.AddSeconds(1) }));
-		Assert.False(model.Reset(new DialogResponse { RequestId = first.RequestId, Summary = "Old", SummaryTimestamp = firstTime }));
-	}
-
-	private static TestLLMConnector SuccessfulConnector() => new()
-	{
-		Initialize = (session, _) => Task.FromResult(new DialogResponse
-		{
-			Summary = session.Dialog.Count == 0 ? string.Empty : "Initial summary.",
-			SummaryTimestamp = session.Dialog.LastOrDefault()?.Timestamp
-		})
+		RequestId = request.RequestId, Summary = request.RawRecords.Count == 0 ? request.Summary : "Updated",
+		SummaryTimestamp = request.RawRecords.LastOrDefault()?.Timestamp, Message = message
 	};
 
-	private static SessionModel Create(TestSessionSelector selector, TestSessionDatabase database,
-		TextProcessor processor, TestLLMConnector connector) =>
-		new(selector, database, processor, connector, new ApplicationSettings(), NullLogger<SessionModel>.Instance);
+	private sealed class Fixture : IAsyncDisposable
+	{
+		internal readonly TestSessionSelector Selector = new();
+		internal readonly TestSessionDatabase Database = new();
+		internal readonly TextProcessor Processor;
+		internal readonly DialogCoordinator Dialog;
+		internal readonly TestLLMConnector Connector = new();
+		internal readonly SessionModel Model;
+		internal Fixture()
+		{
+			Processor = new TextProcessor(Selector, Database, NullLogger<TextProcessor>.Instance);
+			Dialog = new DialogCoordinator(Processor);
+			Connector.Initialize = (session, _) => Task.FromResult(new DialogResponse
+			{
+				Summary = session.Dialog.Count == 0 ? "" : "Restored", SummaryTimestamp = session.Dialog.LastOrDefault()?.Timestamp
+			});
+			Model = new SessionModel(Selector, Database, Dialog, Connector, new ApplicationSettings(), NullLogger<SessionModel>.Instance,
+				new SessionRecoveryOptions { Delay = TimeSpan.Zero });
+		}
+		internal async Task InitializeAsync() { await Selector.InitializeAsync(); await Model.InitializeAsync(); }
+		public async ValueTask DisposeAsync() { await Model.DisposeAsync(); await Processor.DisposeAsync(); }
+	}
 }

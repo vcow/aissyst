@@ -522,6 +522,7 @@ public class AvailableSourcesTests
 		builder.Services.AddSingleton<ConsoleCaptureSession>();
 		builder.Services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<ConsoleCaptureSession>());
 		builder.Services.AddSingleton<ApplicationController>();
+		builder.Services.AddSingleton<DialogCoordinator>();
 		builder.Services.AddSingleton<IOutput, TestOutput>();
 		builder.Services.AddScoped<CaptureSessionContext>();
 		builder.Services.AddScoped<CaptureSession>();

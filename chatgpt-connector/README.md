@@ -40,7 +40,11 @@ https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
 
 After authorization, the connector fetches the account's model catalog from `GET https://api.openai.com/v1/models`. Entries with `visibility: "list"` are passed, in server order, to `IModelSelector`. The console implementation displays `display_name` and returns the selected `slug` for inference. There is no hardcoded model default.
 
-`SessionModel` obtains the selected session's initial instructions from the database and configures `ILLMSessionLifecycle`. Session data remains in the existing application DTOs; storage entities are not serialized directly to the server.
+`SessionModel` obtains the selected session's initial instructions from the database and passes them directly to `ILLMConnector.InitializeSession`. Session data remains in the existing application DTOs; storage entities are not serialized directly to the server. There is no session lifecycle callback interface.
+
+`ILLMConnector` returns `LLMResponse`: the parsed `DialogResponse` plus an opaque `ILLMContinuation`. A continuation identifies its socket and leases the cached provider response; it supports `Retain`/`Dispose` so active parents cannot be overwritten while requests are in flight. These are transport resources, not application DTO fields. The connector neither applies summaries nor decides which request is current.
+
+`SessionModel.SendRequestAsync` owns the entire request operation. It creates a snapshot, retains the confirmed continuation, awaits the connector outside the state lock, validates the returned payload against the submitted snapshot, and under one short lock replaces the immutable confirmed state: request ID, summary, summary timestamp, and continuation. It disposes rejected continuations. Errors leave the previous state intact; stale replies return null. The controller only displays accepted answers and preserves their display order if task continuations are scheduled out of order.
 
 On a new connection, the connector sends:
 
@@ -50,7 +54,7 @@ On a new connection, the connector sends:
 
 Every request uses `store: false`. Warmup and Session initialization use the named stream `interview`; assistance requests use reusable named fork streams. Generated requests use a strict JSON schema with `request_id`, `error`, `summary`, nullable `summary_ts`, and `message`. `SummaryTimestamp` remains `DateTime?` in application code. No separate application revision counter is added.
 
-One reader consumes complete WebSocket text messages, including fragmented messages. It handles API events separately from the JSON inside model output. Partial deltas are not parsed as completed answers. Refusals, failed/incomplete responses, schema violations, incorrect request IDs, and invalid summary boundaries cannot commit state. `confirmedResponseId` is the server-issued response ID needed for `previous_response_id`; it is distinct from the application's `request_id`.
+One reader consumes complete WebSocket text messages, including fragmented messages. It handles API events separately from the JSON inside model output. Partial deltas are not parsed as completed answers. Refusals, failed/incomplete responses, schema violations, incorrect request IDs, and invalid summary boundaries cannot commit state. The server-issued response ID needed for `previous_response_id` is encapsulated in `ILLMContinuation` and remains distinct from the application's `request_id`.
 
 ## Cancellation and recovery
 
@@ -60,11 +64,13 @@ Only successful, validated responses whose `request_id` exceeds the last accepte
 
 Disconnects, send timeouts, and unusable server chains trigger recovery. The interrupted assistance request fails and is **not** resubmitted. The user can request assistance again after the recovery log confirms readiness. Requests made during recovery fail without sending stale input.
 
-Recovery opens a new authenticated socket, repeats warmup, awaits `SessionModel` reloading the text processor from SQLite and obtains a fresh `Session` through `GetSession()`, and initializes that session. During history restoration, the controller clears the chat display and prints the complete dialog in one synchronous batch, including the pending turn. Reload and redraw are coordinated with live processing; all `IOutput` calls are serialized so batches do not interleave with individual messages or answers. The reconstructed summary replaces the old in-memory summary. Requests prepared before recovery cannot overwrite it. Real fragments arriving during recovery remain in the text processor and are included in later requests when they lie beyond the accepted snapshot's timestamp.
+On actual socket loss, the connector raises `ConnectionLost` and fails affected wire operations. `SessionModel` marks the session unavailable and runs bounded recovery: reconnect, reload the dialog, and initialize a fresh Session with the initial instructions. The connector has no callback into the model and does not retry application requests. The reconstructed summary and continuation replace confirmed state together. Connection identity and request ID prevent old replies from overwriting restored state.
+
+`DialogCoordinator` serializes live processing and history replacement, including synchronous notifications. The controller handles `MessageCompleted` by printing one turn and `HistoryReplaced` by clearing the display and printing the complete history, including a pending turn. The model reloads history through this coordinator; it never calls an output component or a controller-provided restoration callback. Fragments arriving after the initialization snapshot remain raw for subsequent requests.
 
 **Transcript storage:** `TextProcessor.ProcessAsync` always adds each original fragment to its unsaved buffer and in-memory history, then attempts one atomic batch append through `AddSessionMultipleDialogRecordsAsync`. Successful commits clear the buffer; failed commits are logged and retain all fragments for the next save. `IReloadableTextProcessor.ReloadAsync` fully replaces history with a sorted database snapshot plus the remaining unsaved fragments, without deduplicating by time or text. Saves and reloads share one gate. Failed reads leave the previous history intact. Disposal attempts a final flush; an application crash can lose the unsaved buffer. Summaries remain in memory and are reconstructed after reconnection. The optional file-only text processor retains its separate storage workflow.
 
-There is no timer-driven reconnection. The connector restores the connection after an actual disconnect or a transport/chain failure. Access-token expiry is checked before each connection attempt. Refresh uses the existing OAuth refresh flow and saves rotated credentials in the existing store. Authorization failures stop recovery instead of repeatedly reconnecting with rejected credentials. Other reconnection attempts are bounded and logged; exhausted recovery requires restarting the application.
+There is no timer-driven reconnection. SessionModel starts recovery after the connector reports an actual disconnect or a transport/chain failure. Access-token expiry is checked before each connection attempt. Refresh uses the existing OAuth refresh flow and saves rotated credentials in the existing store. Authorization failures stop recovery instead of repeatedly reconnecting with rejected credentials. Other reconnection attempts are bounded and logged; exhausted recovery requires restarting the application.
 
 ## Options and validation
 
@@ -74,8 +80,9 @@ There is no timer-driven reconnection. The connector restores the connection aft
 | --- | --- |
 | `ConnectionTimeout` | 30 seconds |
 | `ResponseTimeout` | 2 minutes |
-| `ReconnectDelay` | 2 seconds |
-| `ReconnectAttempts` | 3 |
+
+
+`SessionRecoveryOptions` belongs to the session model: `Delay` defaults to 2 seconds and `Attempts` to 3. It is registered separately in DI.
 
 Automated tests use an injected socket and synthetic data. They cover initialization, model selection, response chaining, semantic validation, API failures, refusals, cancellation, timeout, idle and in-flight disconnects, access-token retrieval on reconnection, recovery summaries, and disposal. They do not establish real-account model compatibility with warmup or Structured Outputs. A real-account check requires choosing an available model and running the console workflow.
 

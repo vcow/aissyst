@@ -43,8 +43,7 @@ internal static class ResponsesProtocol
 		return JsonSerializer.Serialize(body);
 	}
 
-	internal static DialogResponse Parse(JsonElement response, int requestId, DateTime? expectedTimestamp,
-		string? previousSummary, bool initialization)
+	internal static DialogResponse Parse(JsonElement response)
 	{
 		var text = new StringBuilder();
 		foreach (var item in response.GetProperty("output").EnumerateArray())
@@ -69,7 +68,7 @@ internal static class ResponsesProtocol
 		using var document = JsonDocument.Parse(text.ToString());
 		var root = document.RootElement;
 		if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 5
-			|| !root.TryGetProperty("request_id", out var id) || !id.TryGetInt32(out var value) || value != requestId)
+			|| !root.TryGetProperty("request_id", out var id) || !id.TryGetInt32(out _))
 		{
 			throw new InvalidDataException("The model response has an invalid structure or request_id.");
 		}
@@ -85,18 +84,7 @@ internal static class ResponsesProtocol
 			throw new InvalidDataException("The model response requires a nullable summary_ts field.");
 		}
 		var result = root.Deserialize<DialogResponse>()!;
-		if (!string.IsNullOrWhiteSpace(result.Error))
-		{
-			return result;
-		}
-		if (result.SummaryTimestamp != expectedTimestamp
-			|| (expectedTimestamp.HasValue && string.IsNullOrWhiteSpace(result.Summary))
-			|| (!string.IsNullOrEmpty(previousSummary) && string.IsNullOrWhiteSpace(result.Summary))
-			|| (!expectedTimestamp.HasValue && previousSummary != null && result.Summary != previousSummary)
-			|| (initialization && (result.Message.Length != 0 || (!expectedTimestamp.HasValue && result.Summary.Length != 0))))
-		{
-			throw new InvalidDataException("The model response does not match the submitted dialog state.");
-		}
+
 		return result;
 	}
 }

@@ -12,7 +12,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace chatgpt_connector;
 
-public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsyncDisposable
+public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 {
 	private const string Issuer = "https://auth.openai.com";
 	private const string Resource = "https://api.openai.com/v1";
@@ -35,18 +35,18 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 
 	public ChatGPTAccount? Account => Volatile.Read(ref _account);
 
-	public void ConfigureSession(string instructions, Func<CancellationToken, Task<Session>> getSession,
-		Action<Session, DialogResponse> acceptRecovery, Func<DialogResponse, bool> acceptResponse) =>
-		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
-			.Configure(instructions, getSession, acceptRecovery, acceptResponse);
+	public event EventHandler? ConnectionLost;
 
-	public Task<DialogResponse> InitializeSession(Session session, CancellationToken cancellationToken = default) =>
-		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
-			.InitializeSessionAsync(session, cancellationToken);
+	public Task ReconnectAsync(CancellationToken cancellationToken = default) =>
+		(_responses ?? throw new InvalidOperationException("The connector has not been initialized.")).ReconnectAsync(cancellationToken);
 
-	public Task<DialogResponse> SendRequest(DialogRequest request, CancellationToken cancellationToken = default) =>
+	public Task<LLMResponse> InitializeSession(string instructions, Session session, CancellationToken cancellationToken = default) =>
 		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
-			.SendAsync(request, cancellationToken);
+			.InitializeSessionAsync(instructions, session, cancellationToken);
+
+	public Task<LLMResponse> SendRequest(DialogRequest request, ILLMContinuation continuation, CancellationToken cancellationToken = default) =>
+		(_responses ?? throw new InvalidOperationException("The connector has not been initialized."))
+			.SendAsync(request, continuation, cancellationToken);
 
 	public ChatGPTConnector(HttpClient httpClient, IChatGPTAuthorization authorization,
 		ChatGPTConnectorOptions options, ILogger<ChatGPTConnector> logger, IModelSelector modelSelector)
@@ -65,8 +65,6 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.LoginTimeout, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ConnectionTimeout, TimeSpan.Zero);
 		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ResponseTimeout, TimeSpan.Zero);
-		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectDelay, TimeSpan.Zero);
-		ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectAttempts, 1);
 		_modelSelector = modelSelector;
 		_httpClient = httpClient;
 		_authorization = authorization;
@@ -154,6 +152,7 @@ public sealed class ChatGPTConnector : ILLMConnector, ILLMSessionLifecycle, IAsy
 				throw new InvalidOperationException("The selected model is not available for this account.");
 			}
 			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger);
+			_responses.ConnectionLost += (_, _) => ConnectionLost?.Invoke(this, EventArgs.Empty);
 		}
 	}
 
