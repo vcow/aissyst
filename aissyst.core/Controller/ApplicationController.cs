@@ -45,12 +45,13 @@ public class ApplicationController : IAsyncDisposable
 	private Task? _disposeTask;
 	private int _lastPrintedAnswerId;
 	private readonly List<DialogMessage> _displayedDialog = [];
+	private readonly IProgress<InitializationProgress>? _initializationProgress;
 	private bool _requestInProgress;
 
 	public ApplicationController(ITranscriber transcriber, DialogCoordinator dialog,
 		ICaptureSession captureSession, ILogger<ApplicationController> logger, ILLMConnector llmConnector,
 		IOutput output, IApplicationSettings settings, ISessionSelector sessionSelector,
-		SessionModel? sessionModel = null)
+		SessionModel? sessionModel = null, IProgress<InitializationProgress>? initializationProgress = null)
 	{
 		_transcriber = transcriber;
 		_dialog = dialog;
@@ -58,6 +59,7 @@ public class ApplicationController : IAsyncDisposable
 		_logger = logger;
 		_llmConnector = llmConnector;
 		_sessionModel = sessionModel;
+		_initializationProgress = initializationProgress;
 		_output = output;
 		_settings = settings;
 		_sessionSelector = sessionSelector;
@@ -145,18 +147,24 @@ public class ApplicationController : IAsyncDisposable
 		}
 
 		using var cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+		_initializationProgress?.Report(new InitializationProgress("Loading sessions..."));
 		await RunTrackedAsync(() => _sessionSelector.InitializeAsync(cts.Token));
+		_initializationProgress?.Report(new InitializationProgress("Signing in and loading available models..."));
 		await RunTrackedAsync(() => _llmConnector.InitializeAsync(cts.Token));
+		_initializationProgress?.Report(new InitializationProgress("Preparing transcription model..."));
 		await RunTrackedAsync(() => _transcriber.InitializeAsync(cts.Token));
 		if (_sessionModel != null)
 		{
+			_initializationProgress?.Report(new InitializationProgress("Restoring dialog and connecting to the LLM..."));
 			await RunTrackedAsync(() => _sessionModel.InitializeAsync(cts.Token));
 		}
 		else
 		{
+			_initializationProgress?.Report(new InitializationProgress("Restoring dialog..."));
 			await RunTrackedAsync(() => _dialog.InitializeAsync(cts.Token));
 		}
 
+		_initializationProgress?.Report(new InitializationProgress("Loading audio sources..."));
 		await RunTrackedAsync(() => _captureSession.InitializeAsync(cts.Token));
 
 		PrintDialogHistory(_dialog.GetDialog(DateTime.MinValue));

@@ -2,7 +2,7 @@
 
 aissyst is a desktop conversation assistant that captures speech, transcribes it locally, and provides help on demand using an LLM. Its purpose is to support live conversations with translations, suggested wording, and possible replies based on a context prepared by the user and the conversation so far.
 
-The application is currently being developed for macOS, with Windows support planned. The current user interface is a console application.
+The application is currently being developed for macOS, with Windows support planned. The console provides the complete conversation workflow; an Avalonia interface now provides startup setup and a system log.
 
 ## How it works
 
@@ -20,6 +20,7 @@ Assistance is requested explicitly rather than automatically for every transcrib
 - Microphone and application audio are captured independently.
 - Local transcription currently uses the English Whisper `small.en-q5_1` model.
 - The model is downloaded when needed and is not stored in the repository.
+- The desktop wizard shows actual model download progress as a percentage and received/total MB. Unknown download sizes show received MB with an indeterminate bar; checksum verification, model loading, and LLM connection show their current stage. Normal logs retain download start, completion, cancellation, and failures; detailed HTTP metadata is available at Debug level. Failures identify the current stage and preserve the underlying exception.
 - Bounded queues separate audio capture, transcription, and text processing. Full transcription/text queues discard the oldest pending items with a log message. The capture event channel holds 512 events; when full, it logs a warning and waits for capacity, which can put pressure on source buffers.
 - Hotkeys allow the user to finish the current audio fragments, stop listening, clear pending work, and request assistance.
 - Assistance hotkeys flush the current recordings and pause capture event processing while pending transcription and text processing finish. Sources continue buffering audio in the channel; timer events are skipped during the pause. Processing resumes as soon as the LLM request snapshot is formed, before the reply arrives. Repeated assistance requests are rejected throughout preparation and generation.
@@ -33,7 +34,7 @@ Local transcription does not require sending audio to the LLM. Conversation text
 | --- | --- |
 | `aissyst.core` | Application orchestration, audio and transcription contracts, dialogue processing, session models, and storage contracts. |
 | `aissyst.console` | Console interaction, configurable hotkeys, user output, and dependency injection setup. |
-| `aissyst.desktop` | Avalonia desktop application scaffold; window layout and GUI workflows will be implemented separately. |
+| `aissyst.desktop` | Avalonia startup wizard, shared-service initialization, and a system log window. Capture and assistance controls are pending. |
 | `aissyst.macos` | macOS audio capture implementation. |
 | `aissyst.windows` | Placeholder for Windows audio capture. |
 | `chatgpt-connector` | ChatGPT authentication and the LLM connector implementation. |
@@ -52,7 +53,7 @@ See [Database operation and context template authoring](aissyst.core/Database/RE
 
 The project is under active development. macOS audio capture, local transcription, dialogue processing, and assistance request orchestration are implemented.
 
-The [Avalonia desktop project](aissyst.desktop/README.md) provides an additional .NET 10 entry point with a starter window. Run it with `dotnet run --project aissyst.desktop/aissyst.desktop.csproj`. Its floating-window layout and connections to application services are pending UI requirements; the console remains the functional interface.
+The [Avalonia desktop project](aissyst.desktop/README.md) provides a .NET 10 entry point with a startup wizard and log window. Run it with `dotnet run --project aissyst.desktop/aissyst.desktop.csproj`. It selects or creates a session, signs in, selects the model and reasoning effort, initializes Whisper and the LLM session, and selects audio sources through one reusable wizard. Application service logs use the window's ILoggerProvider and a virtualized ListBox with level filters, severity colors, Copy/Clear, and a Latest button that resumes automatic scrolling. The complete log stays in memory until cleared or the application exits; Copy includes messages hidden by filters. Audio capture controls and floating transcript/answer windows are pending; use the console for the complete interview workflow.
 
 Sign in with ChatGPT has been implemented and verified. The [ChatGPT connector](chatgpt-connector/README.md) now implements Responses API WebSocket initialization, account-specific model selection, JSON requests and responses, cancellation, token renewal, and connection recovery. LLM requests run one at a time; busy requests are rejected immediately, and emergency cancellation closes the socket and triggers recovery. A minimal real-account WebSocket request succeeded without `stream_id`; the complete console inference workflow still needs live verification.
 

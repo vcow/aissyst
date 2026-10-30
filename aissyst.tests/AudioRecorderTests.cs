@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using aissyst.console;
+using aissyst.core;
 using aissyst.core.Audio;
 
 namespace aissyst.tests;

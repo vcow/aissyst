@@ -12,6 +12,8 @@
     <PackageReference Include="Avalonia" Version="12.1.4" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +22,10 @@
     <ProjectReference Include="..\aissyst.macos\aissyst.macos.csproj" />
     <ProjectReference Include="..\aissyst.windows\aissyst.windows.csproj" />
     <ProjectReference Include="..\chatgpt-connector\chatgpt-connector.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="aissyst.tests" />
   </ItemGroup>
 
 </Project>
