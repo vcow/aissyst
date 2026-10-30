@@ -12,6 +12,19 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	{
 		internal readonly TaskCompletionSource<JsonElement> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		internal string? ResponseId;
+		internal readonly SortedDictionary<int, JsonElement> OutputItems = [];
+
+		internal JsonElement GetCompletedResponse(JsonElement response)
+		{
+			if (response.GetProperty("output").GetArrayLength() != 0 || OutputItems.Count == 0)
+			{
+				return response.Clone();
+			}
+			// Some servers send finalized items only in stream events, leaving the terminal output empty.
+			var properties = response.EnumerateObject().ToDictionary(property => property.Name, property => (object)property.Value);
+			properties["output"] = OutputItems.Values.ToArray();
+			return JsonSerializer.SerializeToElement(properties);
+		}
 	}
 
 	private sealed class Operation(CancellationTokenSource cancellation)
@@ -258,7 +271,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			}
 			var socket = _socket!;
 			var warmup = await ExchangeAsync(socket, instructions, "developer", null, false, token);
-			var response = await ExchangeAsync(socket, JsonSerializer.Serialize(session), "user",
+			var response = await ExchangeAsync(socket, ResponsesProtocol.Serialize(session), "user",
 				warmup.GetProperty("id").GetString(), true, token);
 			return CreateResult(socket, response);
 		}, cancellationToken);
@@ -273,7 +286,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		return StartOperation(async token =>
 		{
 			using var lease = (Continuation)parent.Retain();
-			var response = await ExchangeAsync(lease.Socket, JsonSerializer.Serialize(request), "user", lease.ResponseId, true, token);
+			var response = await ExchangeAsync(lease.Socket, ResponsesProtocol.Serialize(request), "user", lease.ResponseId, true, token);
 			return CreateResult(lease.Socket, response);
 		}, cancellationToken);
 	}
@@ -312,7 +325,12 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			timeout.CancelAfter(_options.ResponseTimeout);
 			try
 			{
-				await socket.SendAsync(ResponsesProtocol.Create(_model, role, text, previousId, generate), timeout.Token);
+				var payload = ResponsesProtocol.Create(_model, role, text, previousId, generate);
+				if (_options.LogProtocolPayloads)
+				{
+					_logger.LogInformation("Responses WebSocket SEND: {Payload}", payload);
+				}
+				await socket.SendAsync(payload, timeout.Token);
 			}
 			catch (Exception exception)
 			{
@@ -342,7 +360,12 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 		{
 			while (!_shutdown.IsCancellationRequested)
 			{
-				using var document = JsonDocument.Parse(await socket.ReceiveAsync(_shutdown.Token));
+				var payload = await socket.ReceiveAsync(_shutdown.Token);
+				if (_options.LogProtocolPayloads)
+				{
+					_logger.LogInformation("Responses WebSocket RECEIVE: {Payload}", payload);
+				}
+				using var document = JsonDocument.Parse(payload);
 				var item = document.RootElement;
 				var type = item.GetProperty("type").GetString();
 				lock (_sync)
@@ -362,7 +385,16 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 						pending.Completion.TrySetException(exception);
 						continue;
 					}
-					if (pending == null || type is not ("response.created" or "response.in_progress" or "response.completed" or "response.failed" or "response.incomplete"))
+					if (pending == null || pending.Completion.Task.IsCompleted)
+					{
+						continue;
+					}
+					if (type == "response.output_item.done")
+					{
+						pending.OutputItems[item.GetProperty("output_index").GetInt32()] = item.GetProperty("item").Clone();
+						continue;
+					}
+					if (type is not ("response.created" or "response.in_progress" or "response.completed" or "response.failed" or "response.incomplete"))
 					{
 						continue;
 					}
@@ -379,7 +411,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 						{
 							throw new InvalidDataException("The response did not complete successfully.");
 						}
-						pending.Completion.TrySetResult(response.Clone());
+						pending.Completion.TrySetResult(pending.GetCompletedResponse(response));
 					}
 					else if (type is "response.failed" or "response.incomplete")
 					{

@@ -40,6 +40,129 @@ public sealed class ResponsesConnectionTests
 		Assert.All(socket.Sent, item => Assert.False(item.TryGetProperty("stream_id", out _)));
 	}
 
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task FinalizedStreamItemsSupportInitializationAndRequestsWithoutDuplicatingTerminalOutput(bool omitCompletedOutput)
+	{
+		using var socket = new FakeSocket { StreamOutputItems = true, OmitCompletedOutput = omitCompletedOutput };
+		await using var connection = Create(() => socket);
+		var initial = await connection.InitializeSessionAsync("Rules", new Session { RequestId = 10 }, default);
+		using var parent = initial.Continuation;
+		Assert.Equal(10, initial.Payload.RequestId);
+		Assert.Empty(initial.Payload.Summary);
+		Assert.Empty(initial.Payload.Message);
+		var result = await connection.SendAsync(new DialogRequest { RequestId = 11 }, parent, default);
+		using var nextParent = result.Continuation;
+		Assert.Equal(11, result.Payload.RequestId);
+		Assert.Equal("Answer", result.Payload.Message);
+		Assert.Equal(socket.Id(2), socket.Sent.Last().GetProperty("previous_response_id").GetString());
+	}
+
+	[Fact]
+	public async Task OutgoingInstructionsSessionAndRequestsKeepReadableUnicodeAndRoundTripJsonEscapes()
+	{
+		const string text = "Русский текст: \"ответ\" \\ путь\nДругая строка\t<данные> & +";
+		using var socket = new FakeSocket();
+		await using var connection = Create(() => socket);
+		var record = new DialogItem { Timestamp = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc), Message = text };
+		var session = new Session
+		{
+			RequestId = 1, Preview = text,
+			Context = [new SessionContextItem { Topic = "Тема", Body = text }],
+			Dialog = [record]
+		};
+		var initial = await connection.InitializeSessionAsync(text, session, default);
+		using var parent = initial.Continuation;
+		var result = await connection.SendAsync(new DialogRequest { RequestId = 2, Summary = text, RawRecords = [record] }, parent, default);
+		using var nextParent = result.Continuation;
+		Assert.All(socket.Sent, item =>
+		{
+			var wireJson = item.GetRawText();
+			Assert.Contains("Русский текст", wireJson);
+			Assert.Contains("<данные> & +", wireJson);
+			Assert.DoesNotContain("\\u", wireJson);
+			using var wire = JsonDocument.Parse(System.Text.Encoding.UTF8.GetBytes(wireJson));
+			Assert.Equal(item.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString(),
+				wire.RootElement.GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString());
+		});
+		Assert.Equal(text, socket.Sent[0].GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString());
+		using var sessionJson = JsonDocument.Parse(socket.Sent[1].GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString()!);
+		Assert.Equal(text, sessionJson.RootElement.GetProperty("preview").GetString());
+		Assert.Equal("Тема", sessionJson.RootElement.GetProperty("context")[0].GetProperty("topic").GetString());
+		Assert.Equal(text, sessionJson.RootElement.GetProperty("context")[0].GetProperty("body").GetString());
+		Assert.Equal(text, sessionJson.RootElement.GetProperty("dialog")[0].GetProperty("message").GetString());
+		using var requestJson = JsonDocument.Parse(socket.Sent[2].GetProperty("input")[0].GetProperty("content")[0].GetProperty("text").GetString()!);
+		Assert.Equal(text, requestJson.RootElement.GetProperty("summary").GetString());
+		Assert.Equal(text, requestJson.RootElement.GetProperty("raw_records")[0].GetProperty("message").GetString());
+	}
+
+	[Fact]
+	public async Task FinalizedOutputUsesOutputIndexOrderAndIgnoresTextDeltas()
+	{
+		using var socket = new FakeSocket();
+		await using var connection = Create(() => socket);
+		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		using var parent = initial.Continuation;
+		socket.Hold = true;
+		var request = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
+		socket.QueueEvent(new { type = "response.created", response = new { id = socket.Id(3) } });
+		socket.QueueEvent(new { type = "response.output_text.delta", output_index = 1, delta = "Invalid partial text" });
+		socket.QueueEvent(new { type = "response.output_item.done", output_index = 2,
+			item = new { type = "message", content = new[] { new { type = "output_text", text = "\"summary_ts\":null,\"message\":\"Ordered answer\"}" } } } });
+		socket.QueueEvent(new { type = "response.output_item.done", output_index = 0,
+			item = new { type = "reasoning", summary = Array.Empty<object>() } });
+		socket.QueueEvent(new { type = "response.output_item.done", output_index = 1,
+			item = new { type = "message", content = new[] { new { type = "output_text", text = "{\"request_id\":1,\"error\":\"\",\"summary\":\"\"," } } } });
+		socket.QueueEvent(new { type = "response.completed", response = new { id = socket.Id(3), status = "completed", output = Array.Empty<object>() } });
+		var result = await request.WaitAsync(Timeout);
+		using var nextParent = result.Continuation;
+		Assert.Equal(1, result.Payload.RequestId);
+		Assert.Equal("Ordered answer", result.Payload.Message);
+	}
+
+	[Theory]
+	[InlineData("response.failed")]
+	[InlineData("response.incomplete")]
+	[InlineData("error")]
+	public async Task FinalizedItemsAreDiscardedWhenTheResponseFailsAndDoNotLeakIntoTheNextRequest(string terminalEvent)
+	{
+		using var socket = new FakeSocket { StreamOutputItems = true, OmitCompletedOutput = true };
+		await using var connection = Create(() => socket);
+		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		using var parent = initial.Continuation;
+		socket.Hold = true;
+		var request = connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
+		socket.QueueEvent(new { type = "response.created", response = new { id = socket.Id(3) } });
+		socket.QueueEvent(new { type = "response.output_item.done", output_index = 0,
+			item = new { type = "message", content = new[] { new { type = "output_text",
+				text = "{\"request_id\":1,\"error\":\"\",\"summary\":\"\",\"summary_ts\":null,\"message\":\"Discarded answer\"}" } } } });
+		socket.QueueEvent(new { type = terminalEvent, response = new { id = socket.Id(3) }, error = new { code = "server_error" } });
+		await Assert.ThrowsAsync<ResponsesApiException>(() => request.WaitAsync(Timeout));
+		Assert.False(connection.IsBusy);
+		Assert.True(parent.IsValid);
+		socket.Hold = false;
+		var result = await connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
+		using var nextParent = result.Continuation;
+		Assert.Equal(2, result.Payload.RequestId);
+		Assert.Equal("Answer", result.Payload.Message);
+	}
+
+	[Theory]
+	[InlineData("invalid_json")]
+	[InlineData("refusal")]
+	public async Task FinalizedStreamItemsStillRequireValidModelOutput(string failure)
+	{
+		using var socket = new FakeSocket { StreamOutputItems = true, OmitCompletedOutput = true };
+		await using var connection = Create(() => socket);
+		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		using var parent = initial.Continuation;
+		socket.Failure = failure;
+		await Assert.ThrowsAnyAsync<Exception>(() => connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default));
+		Assert.False(connection.IsBusy);
+		Assert.True(parent.IsValid);
+	}
+
 	[Fact]
 	public async Task BusyRequestsFailImmediatelyWithoutQueueingOrCancelingTheActiveRequest()
 	{
@@ -307,6 +430,8 @@ public sealed class ResponsesConnectionTests
 		internal readonly List<JsonElement> Sent = [];
 		internal readonly TaskCompletionSource Held = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		internal bool Hold;
+		internal bool StreamOutputItems;
+		internal bool OmitCompletedOutput;
 		internal Task? ConnectWait;
 		internal Task? ReceiveCloseWait;
 		private int _disposed;
@@ -342,6 +467,7 @@ public sealed class ResponsesConnectionTests
 			return Task.CompletedTask;
 		}
 		internal void CompleteHeld(int index = 0) => Complete(HeldMessages[index].Item, HeldMessages[index].Index);
+		internal void QueueEvent(object item) => _incoming.Writer.TryWrite(JsonSerializer.Serialize(item));
 		internal void Fail(Exception exception) => _incoming.Writer.TryComplete(exception);
 		public async Task<string> ReceiveAsync(CancellationToken cancellationToken)
 		{
@@ -397,8 +523,26 @@ public sealed class ResponsesConnectionTests
 					new { type = "output_text", text = Failure == "invalid_json" ? "{invalid" : JsonSerializer.Serialize(dto) };
 				output = [new { type = "message", content = new[] { content } }];
 			}
-			_incoming.Writer.TryWrite(JsonSerializer.Serialize(new { type = "response.completed",
-				response = new { id, status = "completed", output } }));
+			if (StreamOutputItems)
+			{
+				for (var outputIndex = 0; outputIndex < output.Length; outputIndex++)
+				{
+					var outputItem = JsonSerializer.SerializeToElement(output[outputIndex]);
+					QueueEvent(new { type = "response.output_item.added", output_index = outputIndex,
+						item = new { type = "message", status = "in_progress", content = Array.Empty<object>() } });
+					var content = outputItem.GetProperty("content")[0];
+					if (content.GetProperty("type").GetString() == "output_text")
+					{
+						var text = content.GetProperty("text").GetString();
+						QueueEvent(new { type = "response.output_text.delta", output_index = outputIndex, content_index = 0, delta = text });
+						QueueEvent(new { type = "response.output_text.done", output_index = outputIndex, content_index = 0, text });
+					}
+					QueueEvent(new { type = "response.content_part.done", output_index = outputIndex, content_index = 0, part = content });
+					QueueEvent(new { type = "response.output_item.done", output_index = outputIndex, item = outputItem });
+				}
+			}
+			QueueEvent(new { type = "response.completed",
+				response = new { id, status = "completed", output = OmitCompletedOutput ? [] : output } });
 		}
 		public void Dispose()
 		{

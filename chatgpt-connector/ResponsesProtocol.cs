@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using aissyst.core.LLMConnector.DTO;
 
@@ -39,6 +40,11 @@ internal sealed class ResponsesApiException(string code, int? status = null, str
 
 internal static class ResponsesProtocol
 {
+	private static readonly JsonSerializerOptions SerializerOptions = new()
+	{
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+	};
+
 	private static readonly JsonElement Schema = JsonDocument.Parse("""
 		{"type":"object","properties":{
 		 "request_id":{"type":"integer"},"error":{"type":"string"},
@@ -46,6 +52,8 @@ internal static class ResponsesProtocol
 		 "message":{"type":"string"}},
 		 "required":["request_id","error","summary","summary_ts","message"],"additionalProperties":false}
 		""").RootElement.Clone();
+
+	internal static string Serialize<T>(T value) => JsonSerializer.Serialize(value, SerializerOptions);
 
 	internal static string Create(string model, string role, string text, string? previousId, bool generate)
 	{
@@ -66,7 +74,7 @@ internal static class ResponsesProtocol
 		{
 			body["generate"] = false;
 		}
-		return JsonSerializer.Serialize(body);
+		return Serialize(body);
 	}
 
 	internal static ResponsesApiException ParseError(JsonElement item)
@@ -128,7 +136,14 @@ internal static class ResponsesProtocol
 				}
 			}
 		}
-		using var document = JsonDocument.Parse(text.ToString());
+		var payload = text.ToString();
+		if (string.IsNullOrWhiteSpace(payload))
+		{
+			throw new InvalidDataException("The Responses API response contains no output_text. " +
+				$"Response ID: {ReadString(Property(response, "id")) ?? "unknown"}; " +
+				$"status: {ReadString(Property(response, "status")) ?? "unknown"}.");
+		}
+		using var document = JsonDocument.Parse(payload);
 		var root = document.RootElement;
 		if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 5
 			|| !root.TryGetProperty("request_id", out var id) || !id.TryGetInt32(out _))

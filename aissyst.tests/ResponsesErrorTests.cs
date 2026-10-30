@@ -87,17 +87,74 @@ public sealed class ResponsesErrorTests
 		Assert.Equal(socket.Id(2), socket.Sent.Last().GetProperty("previous_response_id").GetString());
 	}
 
-	private static ResponsesConnection Create(ResponsesConnectionTests.FakeSocket socket, ILogger logger) =>
-		new("test-model", _ => Task.FromResult("test-access-token"), new ChatGPTConnectorOptions(), logger, () => socket);
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task ProtocolLoggingIncludesCompletePayloadsOnlyWhenEnabled(bool enabled)
+	{
+		using var socket = new ResponsesConnectionTests.FakeSocket();
+		var logger = new TestLogger();
+		await using var connection = Create(socket, logger, enabled);
+		var session = new Session
+		{
+			RequestId = 1, Preview = "Diagnostic preview",
+			Context = [new SessionContextItem { Topic = "Diagnostic topic", Body = "Diagnostic context body" }]
+		};
+		var initial = await connection.InitializeSessionAsync("Diagnostic instructions", session, default);
+		using var parent = initial.Continuation;
+		var response = await connection.SendAsync(new DialogRequest { RequestId = 2 }, parent, default);
+		response.Continuation.Dispose();
+		var sent = logger.Messages.Where(message => message.StartsWith("Responses WebSocket SEND: ")).ToArray();
+		var received = logger.Messages.Where(message => message.StartsWith("Responses WebSocket RECEIVE: ")).ToArray();
+		if (enabled)
+		{
+			Assert.Equal(socket.Sent.Select(item => item.GetRawText()), sent.Select(message => message["Responses WebSocket SEND: ".Length..]));
+			Assert.Contains(sent, message => message.Contains("Diagnostic instructions"));
+			Assert.Contains(sent, message => message.Contains("Diagnostic context body"));
+			Assert.Contains(received, message => message.Contains("response.completed") && message.Contains("output_text"));
+		}
+		else
+		{
+			Assert.Empty(sent);
+			Assert.Empty(received);
+		}
+		Assert.DoesNotContain(logger.Messages, message => message.Contains("test-access-token"));
+	}
+
+	[Fact]
+	public async Task EmptyInitializationOutputIsLoggedAndReportedWithResponseId()
+	{
+		using var socket = new ResponsesConnectionTests.FakeSocket();
+		socket.ErrorEvent = _ => new
+		{
+			type = "response.completed", response = new { id = "resp_empty", status = "completed", output = Array.Empty<object>() }
+		};
+		var logger = new TestLogger();
+		await using var connection = Create(socket, logger, true);
+		var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+			connection.InitializeSessionAsync("Rules", new Session(), default));
+		Assert.Contains("no output_text", exception.Message);
+		Assert.Contains("resp_empty", exception.Message);
+		Assert.Contains("completed", exception.Message);
+		Assert.False(connection.IsBusy);
+		Assert.Contains(logger.Messages, message => message.StartsWith("Responses WebSocket RECEIVE: ")
+			&& message.Contains("resp_empty") && message.Contains("\"output\":[]"));
+	}
+
+	private static ResponsesConnection Create(ResponsesConnectionTests.FakeSocket socket, ILogger logger, bool logPayloads = false) =>
+		new("test-model", _ => Task.FromResult("test-access-token"),
+			new ChatGPTConnectorOptions { LogProtocolPayloads = logPayloads }, logger, () => socket);
 
 	private sealed class TestLogger : ILogger
 	{
 		internal ConcurrentQueue<string> Errors { get; } = new();
+		internal ConcurrentQueue<string> Messages { get; } = new();
 		public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 		public bool IsEnabled(LogLevel logLevel) => true;
 		public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
 			Func<TState, Exception?, string> formatter)
 		{
+			Messages.Enqueue(formatter(state, exception));
 			if (logLevel == LogLevel.Error)
 			{
 				Errors.Enqueue(formatter(state, exception));

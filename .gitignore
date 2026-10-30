@@ -51,3 +51,5 @@ models/
 # Project-specific Codex account: share configuration, keep local state private
 /.codex-account/*
 !/.codex-account/config.toml
+
+log.txt
