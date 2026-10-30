@@ -1,4 +1,6 @@
-namespace aissyst.core;
+using aissyst.core;
+
+namespace aissyst.console;
 
 public class ApplicationSettings : IApplicationSettings
 {

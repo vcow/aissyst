@@ -9,6 +9,15 @@
         Height="450"
         MinWidth="320"
         MinHeight="200">
+    <DockPanel>
+        <Menu DockPanel.Dock="Top" IsVisible="{OnPlatform Default=True, macOS=False}">
+            <MenuItem Header="Application">
+                <MenuItem x:Name="SettingsMenuItem" Header="Settings…" Click="OpenSettings" />
+                <MenuItem Header="Show Log" Click="ShowLog" />
+                <Separator />
+                <MenuItem x:Name="QuitMenuItem" Header="Quit" Click="QuitApplication" />
+            </MenuItem>
+        </Menu>
     <Grid Margin="12" RowDefinitions="Auto,*" RowSpacing="8">
         <WrapPanel Orientation="Horizontal">
             <ToggleButton x:Name="InfoFilter" Content="Info" IsChecked="{Binding ShowInfo, Mode=TwoWay}"
@@ -49,4 +58,5 @@
             </ListBox.ItemTemplate>
         </ListBox>
     </Grid>
+    </DockPanel>
 </Window>

@@ -9,5 +9,6 @@ internal static class Program
 
 	public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>()
 		.UsePlatformDetect()
+		.With(new MacOSPlatformOptions { ShowInDock = true, DisableDefaultApplicationMenuItems = true })
 		.LogToTrace();
 }

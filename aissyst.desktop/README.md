@@ -6,7 +6,9 @@ Avalonia desktop application targeting .NET 10, with a startup wizard and a syst
 dotnet run --project aissyst.desktop/aissyst.desktop.csproj
 ```
 
-`Program.cs` configures Avalonia and the classic desktop application lifetime. `App.axaml` defines application styles. `Views/MainWindow.axaml` is the log window. Closing it cancels startup, awaits initialization, and asynchronously disposes the controller, model, connector, transcription engine, and remaining services before exiting.
+`Program.cs` configures Avalonia and the classic desktop application lifetime. `App.axaml` defines application styles. `Views/MainWindow.axaml` is the log window. On macOS, closing the log window hides it and keeps setup and services running. The application uses OnExplicitShutdown. The native application menu starts with Settings…, followed by Show Log and Quit; the Dock menu offers the same actions. Show Log or reopening the Dock icon brings the existing log back without repeating setup. On other platforms an Application menu appears in the log window, and closing minimizes it so it remains accessible from the taskbar. Quit cancels startup, closes settings, awaits initialization, and asynchronously disposes services before exiting.
+
+The application menu root is declared in `App.axaml`, so it exists during `App.Initialize`, before the macOS backend exports it in AppBuilder.AfterSetup. `DesktopApplicationShell` populates this same menu instance instead of replacing it later in OnFrameworkInitializationCompleted. Replacing the root at that point left the native exporter showing its original About Avalonia fallback. Dock export uses a separate menu instance.
 
 The main window displays structured log entries in a virtualized ListBox on a dark gray background. Information messages are white, warnings yellow, and errors/critical messages red. Each entry retains its local timestamp, level, category, full message, and multiline exception details. Independent Info, Warning, and Error toggles are initially enabled; they hide entries without removing them. Error includes Critical. Selectable text inside each entry allows copying individual fragments.
 
@@ -16,7 +18,20 @@ Automatic scrolling follows new entries while the view is at the bottom. Scrolli
 
 `WindowLoggerProvider` implements `ILoggerProvider`; all application services receive their usual `ILogger<T>` from the desktop DI container and use this provider, including `ApplicationController`, Whisper, and the ChatGPT connector. The minimum level remains Information. The console uses its existing standard provider. Avalonia framework diagnostics still use `LogToTrace`.
 
-`DesktopServices` registers the shared application controller, settings, SQLite store, text processor, Whisper transcriber, session model, and ChatGPT connector. The project does not depend on `aissyst.console`. `ApplicationSettings` now lives in `aissyst.core` and is used by both frontends; the console keeps its selectors, hotkeys, and standard console logging provider.
+`DesktopServices` registers the shared application controller, settings, SQLite store, text processor, Whisper transcriber, session model, and ChatGPT connector. The project does not depend on `aissyst.console`. `IApplicationSettings` remains the core contract. The console owns its original `ApplicationSettings` implementation; desktop owns a separate immutable `DesktopApplicationSettings` and settings store. The desktop project does not reference console. Console selectors, hotkeys, defaults, and standard logging provider are preserved.
+
+Settings opens one modal dialog with four tabs covering every property in `IApplicationSettings`. Repeated menu requests activate the same dialog. Other application windows, including a wizard opened while Settings is already visible, are disabled until the dialog closes.
+
+| Tab | Controls | Existing desktop defaults |
+| --- | --- | --- |
+| General | Audio-source dropdown; Markdown checkbox | Microphone and application; Markdown enabled |
+| Recording | Numeric silence and maximum fragment duration in seconds; normalized signal threshold | 1 second; 15 seconds; 0.01 |
+| Processing | Numeric queue capacity; two integer sliders from 1 to 5 | 10 fragments; 1 transcription task; 1 text task |
+| Transcription | Model path with Browse, download URL, SHA-256, language code | Existing small.en-q5_1 path/URL/hash; en |
+
+Save validates the whole form and atomically writes readable JSON to `LocalApplicationData/aissyst/desktop-settings.json`; on macOS this is under Application Support. An invalid form or failed write stays open with an error. Cancel or closing the dialog discards edits. Restore Defaults resets the form; Save is still required to persist the defaults. The current engine serializes Whisper inference internally even when the outer concurrency limit is higher.
+
+**Settings take effect on the next application launch.** The dialog states this explicitly. Running services keep their immutable startup snapshot, avoiding inconsistent semaphore counts, model parameters, or source selection during a session. A malformed settings file is preserved, logged as a warning, and defaults are used until corrected through Settings. Desktop settings do not affect the console.
 
 Startup follows the existing controller sequence:
 
@@ -30,7 +45,7 @@ The context page likewise provides Delete and Next (Create) for saved contexts. 
 
 `WizardService` implements the independent `IWizardService` UI contract. It creates one independent, nonmodal window on the first request, accepts requests from background threads, and serializes requests. Startup is queued after the log window has opened. The wizard has a fixed size of 620 × 520 logical pixels, enforced by matching minimum/maximum dimensions and disabled resizing. `DesktopWindowPlacement` places the log and wizard side by side in the screen's working area, reducing only the log window's width if needed. Both windows remain interactive and movable. Radio choices have a vertical scrollbar. Next confirms only the current page and immediately disables until another page arrives; there is no Previous button.
 
-The wizard uses border-only window decorations without active native close/minimize/maximize buttons. Drag the separate, permanent `aissyst - Setup` title bar to move it; the title bar remains enabled while a page is waiting or has failed. Normal close requests are rejected, including programmatic `Close()` outside its explicit completion method. The desktop startup code completes the wizard only after successful `ApplicationController.InitializeAsync`, so selectors do not need to know the last step. Startup failure leaves the wizard open with an error and stops its waiting indicator. Closing the log window or choosing application Quit still cancels initialization and disposes the wizard as part of application shutdown. Close and restart the application to retry a startup failure.
+The wizard uses border-only window decorations without active native close/minimize/maximize buttons. Drag the separate, permanent `aissyst - Setup` title bar to move it; the title bar remains enabled while a page is waiting or has failed. Normal close requests are rejected, including programmatic `Close()` outside its explicit completion method. The desktop startup code completes the wizard only after successful `ApplicationController.InitializeAsync`, so selectors do not need to know the last step. Startup failure leaves the wizard open with an error and stops its waiting indicator. Closing the log window keeps setup running. Choosing Quit cancels initialization and disposes the wizard as part of application shutdown. Quit and restart the application to retry a startup failure.
 
 Desktop and console share the SQLite location and ChatGPT credential store. Run one frontend at a time: the existing connector holds an exclusive credential-store lock. The Whisper model is downloaded into the desktop output directory if absent, so the first desktop startup may download it even if the console has its own copy. macOS is the supported audio platform; Windows enumeration/capture remains a placeholder and a startup error is logged there.
 

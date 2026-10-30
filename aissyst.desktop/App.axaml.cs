@@ -5,6 +5,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using aissyst.core.Controller;
 using aissyst.desktop.ViewModels;
+using aissyst.desktop.Settings;
 using aissyst.desktop.Views;
 using aissyst.desktop.Wizard;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,8 @@ public partial class App : Application
 	private Task? _startup;
 	private bool _stopping;
 	private bool _shutdownFinished;
+	private DesktopApplicationShell? _shell;
+	private DesktopSettingsDialog? _settingsDialog;
 
 	public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -28,25 +31,37 @@ public partial class App : Application
 		{
 			var log = new LogViewModel();
 			var main = new MainWindow { DataContext = log };
-			_services = DesktopServices.Create(main, log).BuildServiceProvider(
+			var settings = new DesktopSettingsStore();
+			_services = DesktopServices.Create(main, log, settings).BuildServiceProvider(
 				new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
-			desktop.ShutdownMode = ShutdownMode.OnLastWindowClose;
+			_settingsDialog = new DesktopSettingsDialog(settings, () => main, () => desktop.Windows,
+				_services.GetRequiredService<ILogger<SettingsWindow>>());
+			_shell = new DesktopApplicationShell(this, main, _settingsDialog, () => BeginShutdown(desktop),
+				_services.GetRequiredService<ILogger<DesktopApplicationShell>>());
+			if (settings.LoadError != null)
+			{
+				_services.GetRequiredService<ILogger<App>>().LogWarning(settings.LoadError,
+					"Failed to load desktop settings. Using defaults; open Settings to save corrected values.");
+			}
+			desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 			desktop.MainWindow = main;
+			if (TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activation)
+			{
+				activation.Activated += (_, args) =>
+				{
+					if (args.Kind == ActivationKind.Reopen && !_stopping)
+					{
+						_shell.ShowLog();
+					}
+				};
+			}
 			main.Opened += (_, _) => Dispatcher.UIThread.Post(() =>
 			{
-				if (!_stopping)
+				if (!_stopping && _startup == null)
 				{
 					_startup = InitializeAsync(_services);
 				}
 			}, DispatcherPriority.ApplicationIdle);
-			main.Closing += (_, args) =>
-			{
-				if (!_shutdownFinished)
-				{
-					args.Cancel = true;
-					BeginShutdown(desktop);
-				}
-			};
 			desktop.ShutdownRequested += (_, args) =>
 			{
 				if (!_shutdownFinished)
@@ -74,7 +89,7 @@ public partial class App : Application
 		}
 		catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 		{
-			logger.LogInformation("Setup cancelled. Close the log window to exit.");
+			logger.LogInformation("Setup cancelled. Choose Quit from the application menu to exit.");
 		}
 		catch (Exception exception)
 		{
@@ -90,10 +105,16 @@ public partial class App : Application
 			return;
 		}
 		_stopping = true;
+		_shell?.PrepareShutdown();
 		var exitCode = 0;
 		try
 		{
 			await _shutdown.CancelAsync();
+			_settingsDialog?.Close();
+			if (_settingsDialog != null)
+			{
+				await _settingsDialog.WaitForCloseAsync();
+			}
 			if (_startup != null)
 			{
 				await _startup;
@@ -112,6 +133,7 @@ public partial class App : Application
 		{
 			_shutdown.Dispose();
 			_shutdownFinished = true;
+			_shell?.AllowClose();
 			desktop.Shutdown(exitCode);
 		}
 	}

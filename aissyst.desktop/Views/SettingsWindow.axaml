@@ -1,0 +1,108 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:aissyst.desktop.ViewModels"
+        x:Class="aissyst.desktop.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        Title="aissyst - Settings" Width="680" Height="610" MinWidth="520" MinHeight="440"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Window.Styles>
+        <Style Selector="TextBlock.description">
+            <Setter Property="Opacity" Value="0.75" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+        </Style>
+    </Window.Styles>
+    <Grid Margin="20" RowDefinitions="Auto,*,Auto,Auto" RowSpacing="12">
+        <TextBlock Text="Changes are saved for the next application launch. Restart aissyst to apply them."
+                   Classes="description" />
+        <TabControl x:Name="SettingsTabs" Grid.Row="1" IsEnabled="{Binding IsEditing}">
+            <TabItem Header="General">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,16,16,8" Spacing="12">
+                        <TextBlock Text="Audio sources" FontWeight="SemiBold" />
+                        <ComboBox x:Name="AvailableSources" ItemsSource="{Binding SourceChoices}"
+                                  SelectedItem="{Binding SelectedSource, Mode=TwoWay}" HorizontalAlignment="Stretch">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:AudioSourceChoice">
+                                    <TextBlock Text="{Binding Label}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <TextBlock Text="Choose which types of audio sources are offered during setup." Classes="description" />
+                        <CheckBox x:Name="UseMarkdown" Content="Format suggested answers with Markdown"
+                                  IsChecked="{Binding UseMarkdown, Mode=TwoWay}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Recording">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,16,16,8" Spacing="10">
+                        <TextBlock Text="Silence before finishing a fragment (seconds)" FontWeight="SemiBold" />
+                        <NumericUpDown x:Name="SilenceSeconds" Value="{Binding SilenceSeconds, Mode=TwoWay}"
+                                       Minimum="0.001" Maximum="3600" Increment="0.1" FormatString="0.###" />
+                        <TextBlock Text="A fragment finishes after this much silence. Listening continues." Classes="description" />
+                        <TextBlock Text="Maximum fragment length (seconds)" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <NumericUpDown x:Name="FragmentSeconds" Value="{Binding FragmentSeconds, Mode=TwoWay}"
+                                       Minimum="0.001" Maximum="3600" Increment="1" FormatString="0.###" />
+                        <TextBlock Text="Long speech is split into fragments of this duration." Classes="description" />
+                        <TextBlock Text="Signal threshold (0–1)" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <NumericUpDown x:Name="SignalThreshold" Value="{Binding SignalThreshold, Mode=TwoWay}"
+                                       Minimum="0.000001" Maximum="1" Increment="0.001" FormatString="0.######" />
+                        <TextBlock Text="Lower values detect quieter speech but may also detect background noise." Classes="description" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Processing">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,16,16,8" Spacing="10">
+                        <TextBlock Text="Pending fragments in the transcription queue" FontWeight="SemiBold" />
+                        <NumericUpDown x:Name="QueueCapacity" Value="{Binding QueueCapacity, Mode=TwoWay}"
+                                       Minimum="1" Maximum="2147483647" Increment="1" FormatString="0" />
+                        <TextBlock Text="When the queue fills, the oldest pending fragments are discarded." Classes="description" />
+                        <TextBlock Text="Concurrent transcription tasks" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <Slider x:Name="TranscriptionConcurrency" Minimum="1" Maximum="5" TickFrequency="1"
+                                    IsSnapToTickEnabled="True" Value="{Binding TranscriptionConcurrency, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="1" VerticalAlignment="Center" Text="{Binding TranscriptionConcurrency, StringFormat='{}{0:0}'}" />
+                        </Grid>
+                        <TextBlock Text="The current Whisper engine processes one fragment at a time internally." Classes="description" />
+                        <TextBlock Text="Concurrent text processing tasks" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <Slider x:Name="TextConcurrency" Minimum="1" Maximum="5" TickFrequency="1"
+                                    IsSnapToTickEnabled="True" Value="{Binding TextConcurrency, Mode=TwoWay}" />
+                            <TextBlock Grid.Column="1" VerticalAlignment="Center" Text="{Binding TextConcurrency, StringFormat='{}{0:0}'}" />
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Transcription">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,16,16,8" Spacing="10">
+                        <TextBlock Text="Model file" FontWeight="SemiBold" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <TextBox x:Name="ModelPath" Text="{Binding ModelPath, Mode=TwoWay}" />
+                            <Button Grid.Column="1" Content="Browse…" Click="BrowseModel" />
+                        </Grid>
+                        <TextBlock Text="If the file is missing or its checksum differs, it is downloaded from the URL below." Classes="description" />
+                        <TextBlock Text="Model download URL" FontWeight="SemiBold" />
+                        <TextBox x:Name="ModelUrl" Text="{Binding ModelUrl, Mode=TwoWay}" />
+                        <TextBlock Text="Expected SHA-256 checksum" FontWeight="SemiBold" />
+                        <TextBox x:Name="ModelSha256" Text="{Binding ModelSha256, Mode=TwoWay}" />
+                        <TextBlock Text="Language code" FontWeight="SemiBold" />
+                        <TextBox x:Name="Language" Text="{Binding Language, Mode=TwoWay}" />
+                        <TextBlock Text="Use a language supported by the chosen model. The default English-only model uses en." Classes="description" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+        <TextBlock Grid.Row="2" Text="{Binding Error}" IsVisible="{Binding HasError}"
+                   Foreground="Red" TextWrapping="Wrap" />
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" IsEnabled="{Binding IsEditing}">
+            <Button x:Name="RestoreDefaultsButton" Content="Restore Defaults" Click="RestoreDefaults" HorizontalAlignment="Left" />
+            <Button x:Name="CancelSettingsButton" Grid.Column="1" Content="Cancel" Click="CancelSettings" />
+            <Button x:Name="SaveSettingsButton" Grid.Column="2" Content="Save" Click="SaveSettings" />
+        </Grid>
+    </Grid>
+</Window>

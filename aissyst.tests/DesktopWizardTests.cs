@@ -13,6 +13,7 @@ using aissyst.core.LLMConnector.Model;
 using aissyst.core.Transcription;
 using aissyst.desktop;
 using aissyst.desktop.Selectors;
+using aissyst.desktop.Settings;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Views;
 using aissyst.desktop.Wizard;
@@ -295,7 +296,8 @@ public sealed class DesktopWizardTests : IDisposable
 		var owner = new Window();
 		owner.Show();
 		var log = new LogViewModel();
-		var services = DesktopServices.Create(owner, log);
+		var services = DesktopServices.Create(owner, log,
+			new DesktopSettingsStore(Path.Combine(Path.GetTempPath(), $"aissyst-settings-{Guid.NewGuid():N}.json")));
 		var database = new TestSessionDatabase();
 		var sources = new TestAudioCapture();
 		var transcriber = new TestTranscriber();

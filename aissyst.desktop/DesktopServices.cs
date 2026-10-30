@@ -10,6 +10,7 @@ using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using aissyst.desktop.Logging;
 using aissyst.desktop.Selectors;
+using aissyst.desktop.Settings;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Wizard;
 using aissyst.sqlite;
@@ -21,7 +22,7 @@ namespace aissyst.desktop;
 
 internal static class DesktopServices
 {
-	public static ServiceCollection Create(Window owner, LogViewModel log)
+	public static ServiceCollection Create(Window owner, LogViewModel log, DesktopSettingsStore? settings = null)
 	{
 		var services = new ServiceCollection();
 		services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Information)
@@ -30,7 +31,9 @@ internal static class DesktopServices
 			provider.GetRequiredService<ILogger<WizardService>>()));
 		services.AddSingleton<IProgress<InitializationProgress>>(provider =>
 			new DesktopStartupProgress((WizardService)provider.GetRequiredService<IWizardService>()));
-		services.AddSingleton<IApplicationSettings>(new ApplicationSettings(maxRecordingDuration: TimeSpan.FromSeconds(15)));
+		settings ??= new DesktopSettingsStore();
+		services.AddSingleton(settings);
+		services.AddSingleton<IApplicationSettings>(settings.Active);
 		services.AddSingleton<IAudioCapture>(_ => OperatingSystem.IsMacOS()
 			? new aissyst.macos.Audio.AudioCapture()
 			: OperatingSystem.IsWindows() ? new aissyst.windows.Audio.AudioCapture()
