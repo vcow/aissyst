@@ -162,7 +162,7 @@ public class AvailableSourcesTests
 		Assert.Equal(2, host.Services.GetRequiredService<TestAudioCapture>().MicrophoneCaptures);
 		Assert.Equal(1, host.Services.GetRequiredService<TestTranscriber>().Initializations);
 		Assert.Contains("Removed 0 pending audio recording(s) and 0 pending transcription(s)", output);
-		Assert.Contains("F to send the current fragments", output);
+		Assert.Contains("F to transcribe and show the current dialog", output);
 		Assert.Contains("X to clear pending audio and text", output);
 		Assert.DoesNotContain("Unknown command", output);
 	}
@@ -216,15 +216,20 @@ public class AvailableSourcesTests
 			await capture.EmitMicrophoneAsync(new AudioFrame(Enumerable.Repeat(0.25f, 320).ToArray(),
 				new AudioFormat(16000, 1), TimeSpan.Zero));
 			input.Send(finishRecording.ToString());
-			while (records.Count < 2 || input.Reads < 5)
+			while (input.Reads < 5)
 			{
 				await Task.Delay(10, timeout.Token);
 			}
+			Assert.Single(records);
 			Assert.Single(transcriber.Requests);
 			Assert.False(worker.ExecuteTask!.IsCompleted);
 			releaseFirst.TrySetResult();
 			Assert.Equal((AudioSourceType.Microphone, "First fragment"), await processor.Results.Reader.ReadAsync(timeout.Token));
 			Assert.Equal((AudioSourceType.Microphone, "Second fragment"), await processor.Results.Reader.ReadAsync(timeout.Token));
+			var dialogOutput = (TestOutput)host.Services.GetRequiredService<IOutput>();
+			await SessionModelTests.WaitUntilAsync(() => dialogOutput.Messages.Count == 2);
+			Assert.Equal(new[] { "First fragment", "Second fragment" }, dialogOutput.Messages.Select(message => message.Text));
+			Assert.Equal(0, host.Services.GetRequiredService<TestLLMConnector>().Requests);
 			Assert.Equal(1, capture.MicrophoneCaptures);
 			input.Send(finishRecording.ToString()); // No active recording: nothing new should be submitted.
 			input.Send("q");
@@ -252,7 +257,7 @@ public class AvailableSourcesTests
 		using var host = CreateHost(new ApplicationSettings(availableSources: AudioSourceType.Microphone),
 			new ConsoleHotkeySettings(finishRecording: finishRecording));
 		var output = await RunWorkflowAsync(host, $"1\n\n{unconfiguredKey}\ns\nq\n");
-		Assert.Contains($"  {keyName} - send current audio fragments", output);
+		Assert.Contains($"  {keyName} - transcribe and show the current dialog", output);
 		Assert.True(output.IndexOf("Hotkeys:", StringComparison.Ordinal) < output.IndexOf("Select microphone", StringComparison.Ordinal));
 		Assert.Contains("Unknown command", output);
 	}

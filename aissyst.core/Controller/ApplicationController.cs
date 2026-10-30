@@ -44,6 +44,7 @@ public class ApplicationController : IAsyncDisposable
 	private bool _isDisposed;
 	private Task? _disposeTask;
 	private int _lastPrintedAnswerId;
+	private readonly List<DialogMessage> _displayedDialog = [];
 	private bool _requestInProgress;
 
 	public ApplicationController(ITranscriber transcriber, DialogCoordinator dialog,
@@ -62,6 +63,7 @@ public class ApplicationController : IAsyncDisposable
 		_sessionSelector = sessionSelector;
 		_dialog.MessageCompleted += PrintDialogMessage;
 		_dialog.HistoryReplaced += PrintDialogHistory;
+		_dialog.HistoryRequested += AppendDialogHistory;
 
 		Debug.Assert(settings is { MaxTextProcessingCount: > 0, MaxTranscriptionProcessingCount: > 0 });
 
@@ -106,6 +108,7 @@ public class ApplicationController : IAsyncDisposable
 		_captureSession.ApplicationRecordingCompleted -= OnApplicationRecordingCompleted;
 		_dialog.MessageCompleted -= PrintDialogMessage;
 		_dialog.HistoryReplaced -= PrintDialogHistory;
+		_dialog.HistoryRequested -= AppendDialogHistory;
 
 		await ClearQueuesInternal();
 		await _cancellationTokenSource.CancelAsync();
@@ -165,14 +168,107 @@ public class ApplicationController : IAsyncDisposable
 		{
 			_output.Clear();
 			_output.PrintMultipleDialogMessages(dialog);
+			_displayedDialog.Clear();
+			_displayedDialog.AddRange(dialog);
 		}
 	}
 
 	private void PrintDialogMessage(DialogMessage message)
 	{
+		var completedHistory = _dialog.GetDialog(DateTime.MinValue)
+			.Where(record => record.Timestamp <= message.Timestamp).ToArray();
+		AppendDialogHistory(completedHistory, batch: false);
+	}
+
+	private void AppendDialogHistory(IReadOnlyList<DialogMessage> dialog) => AppendDialogHistory(dialog, batch: true);
+
+	private void AppendDialogHistory(IReadOnlyList<DialogMessage> dialog, bool batch)
+	{
 		lock (_outputSync)
 		{
-			_output.PrintDialogMessage(message);
+			var additions = new List<DialogMessage>();
+			for (var index = 0; index < dialog.Count; index++)
+			{
+				var message = dialog[index];
+				var text = message.Text;
+				if (index < _displayedDialog.Count)
+				{
+					var displayed = _displayedDialog[index];
+					if (displayed.Source == message.Source)
+					{
+						if (displayed.Text.StartsWith(text, StringComparison.Ordinal))
+						{
+							continue;
+						}
+						if (text.StartsWith(displayed.Text, StringComparison.Ordinal))
+						{
+							text = text[displayed.Text.Length..].TrimStart();
+						}
+					}
+					_displayedDialog[index] = message;
+				}
+				else
+				{
+					_displayedDialog.Add(message);
+				}
+				if (!string.IsNullOrWhiteSpace(text))
+				{
+					additions.Add(message with { Text = text });
+				}
+			}
+			if (batch)
+			{
+				_output.PrintMultipleDialogMessages(additions);
+			}
+			else
+			{
+				foreach (var addition in additions)
+				{
+					_output.PrintDialogMessage(addition);
+				}
+			}
+		}
+	}
+
+	public async Task ShowDialogAsync(CancellationToken cancellationToken = default,
+		Func<CancellationToken, Task<IDisposable>>? pauseAudioProcessing = null)
+	{
+		Task operation;
+		lock (_trackedTasksLock)
+		{
+			ObjectDisposedException.ThrowIf(_isDisposed, this);
+			cancellationToken.ThrowIfCancellationRequested();
+			operation = ShowDialogCoreAsync(cancellationToken, pauseAudioProcessing);
+			_ = RunTrackedAsync(() => ObserveOperationCompletionAsync(operation), isRequest: true);
+		}
+		await operation;
+	}
+
+	private async Task ShowDialogCoreAsync(CancellationToken cancellationToken, Func<CancellationToken, Task<IDisposable>>? pauseAudioProcessing)
+	{
+		using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_stoppingToken, cancellationToken);
+		IDisposable? pause = null;
+		try
+		{
+			if (pauseAudioProcessing != null)
+			{
+				pause = await pauseAudioProcessing(cancellation.Token);
+			}
+			await WaitForIdleAsync(cancellation.Token);
+			await _dialog.ShowHistoryAsync(cancellation.Token);
+		}
+		catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+		{
+			throw;
+		}
+		catch (Exception exception)
+		{
+			_logger.LogError(exception, "Failed to show the transcribed dialog.");
+			throw;
+		}
+		finally
+		{
+			pause?.Dispose();
 		}
 	}
 
@@ -195,7 +291,7 @@ public class ApplicationController : IAsyncDisposable
 				requestToken = cancellation.Token;
 				_requestInProgress = true;
 				operation = SendRequestCoreAsync(request, cancellation, pauseAudioProcessing);
-				_ = RunTrackedAsync(() => ObserveRequestCompletionAsync(operation), isRequest: true);
+				_ = RunTrackedAsync(() => ObserveOperationCompletionAsync(operation), isRequest: true);
 			}
 			return await operation;
 		}
@@ -259,7 +355,7 @@ public class ApplicationController : IAsyncDisposable
 		}
 	}
 
-	private static async Task ObserveRequestCompletionAsync(Task<DialogResponse?> operation)
+	private static async Task ObserveOperationCompletionAsync(Task operation)
 	{
 		try
 		{
@@ -267,7 +363,7 @@ public class ApplicationController : IAsyncDisposable
 		}
 		catch (Exception)
 		{
-			// SendRequestAsync logs failures; disposal only needs to wait for completion.
+			// The operation logs failures; disposal only needs to wait for completion.
 		}
 	}
 

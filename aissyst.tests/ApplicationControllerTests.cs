@@ -175,6 +175,93 @@ public class ApplicationControllerTests
 	}
 
 	[Fact]
+	public async Task ShowingDialogIncludesThePendingTurnAndDoesNotDuplicateItWhenTheSpeakerChanges()
+	{
+		using var source = new TestCaptureSession();
+		var transcriber = new TestTranscriber { Recognize = (frames, _) => Task.FromResult($"Text {frames[0].Samples.Span[0]}") };
+		var output = new TestOutput();
+		var connector = new TestLLMConnector();
+		await using var controller = Create(source, transcriber, new TestTextProcessor(), output: output, connector: connector);
+		await controller.InitializeAsync();
+		source.PublishApplication(Frames(1));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal("Text 1", Assert.Single(output.Messages).Text);
+		source.PublishMicrophone(Frames(2));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal("Text 1", Assert.Single(output.Messages).Text);
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Text 1", "Text 2" }, output.Messages.Select(message => message.Text));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(2, output.Messages.Count);
+		source.PublishMicrophone(Frames(3));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Text 1", "Text 2", "Text 3" }, output.Messages.Select(message => message.Text));
+		Assert.Equal(0, connector.Requests);
+	}
+
+	[Fact]
+	public async Task ShowingDialogPreservesConsoleHistoryAnswersAndAppendsOnlyNewText()
+	{
+		using var source = new TestCaptureSession();
+		using var writer = new StringWriter();
+		var clears = 0;
+		var output = new ConsoleOutput(writer, () => { clears++; writer.GetStringBuilder().Clear(); });
+		var processor = new TestTextProcessor();
+		var connector = new TestLLMConnector();
+		var transcriber = new TestTranscriber { Recognize = (frames, _) => Task.FromResult($"Text {frames[0].Samples.Span[0]}") };
+		await using var controller = new ApplicationController(transcriber, new DialogCoordinator(processor), source,
+			NullLogger<ApplicationController>.Instance, connector, output, new ApplicationSettings(), processor.Selector);
+		await controller.InitializeAsync();
+		writer.WriteLine("Previous console output");
+		output.PrintLLMAnswer("Previous LLM answer");
+		var initial = writer.ToString();
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(initial, writer.ToString());
+		source.PublishApplication(Frames(1));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		var first = writer.ToString();
+		Assert.StartsWith(initial, first);
+		Assert.Contains(": Text 1", first);
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(first, writer.ToString());
+		source.PublishApplication(Frames(2));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		var second = writer.ToString();
+		Assert.StartsWith(first, second);
+		Assert.Contains(": Text 2", second[first.Length..]);
+		Assert.DoesNotContain("Text 1", second[first.Length..]);
+		source.PublishMicrophone(Frames(3));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(second, writer.ToString());
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.StartsWith(second, writer.ToString());
+		Assert.Contains(": Text 3", writer.ToString()[second.Length..]);
+		Assert.Equal(1, clears);
+		Assert.Equal(0, connector.Requests);
+	}
+
+	[Fact]
+	public async Task RepeatedWordsAfterRestoredHistoryAreNotLostWhenAppendingTheNextTurn()
+	{
+		using var source = new TestCaptureSession();
+		var selector = new TestSessionSelector();
+		var database = new TestSessionDatabase();
+		database.Session = database.Session with { Dialog = [new DialogRecord(DateTime.UtcNow.AddMinutes(-1), "interviewer", "Yes")] };
+		await using var processor = new TextProcessor(selector, database, NullLogger<TextProcessor>.Instance);
+		var transcriber = new TestTranscriber { Recognize = (frames, _) => Task.FromResult(frames[0].Samples.Span[0] == 1 ? "Yes" : "Reply") };
+		var output = new TestOutput();
+		await using var controller = new ApplicationController(transcriber, new DialogCoordinator(processor), source,
+			NullLogger<ApplicationController>.Instance, new TestLLMConnector(), output, new ApplicationSettings(), selector);
+		await controller.InitializeAsync();
+		source.PublishApplication(Frames(1));
+		source.PublishMicrophone(Frames(2));
+		await controller.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Yes", "Yes" }, output.Messages.Select(message => message.Text));
+		await controller.ShowDialogAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(new[] { "Yes", "Yes", "Reply" }, output.Messages.Select(message => message.Text));
+	}
+
+	[Fact]
 	public async Task WaitForIdleIncludesSavingOriginalTranscription()
 	{
 		using var source = new TestCaptureSession();

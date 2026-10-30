@@ -6,6 +6,7 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 	private readonly SemaphoreSlim _gate = new(1, 1);
 	public event Action<DialogMessage>? MessageCompleted;
 	public event Action<IReadOnlyList<DialogMessage>>? HistoryReplaced;
+	public event Action<IReadOnlyList<DialogMessage>>? HistoryRequested;
 
 	public Task InitializeAsync(CancellationToken cancellationToken = default) => processor.InitializeAsync(cancellationToken);
 	public IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime) => processor.GetDialog(fromTime);
@@ -38,6 +39,20 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 			}
 			cancellationToken.ThrowIfCancellationRequested();
 			HistoryReplaced?.Invoke(processor.GetDialog(DateTime.MinValue));
+		}
+		finally
+		{
+			_gate.Release();
+		}
+	}
+
+	public async Task ShowHistoryAsync(CancellationToken cancellationToken = default)
+	{
+		await _gate.WaitAsync(cancellationToken);
+		try
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			HistoryRequested?.Invoke(processor.GetDialog(DateTime.MinValue));
 		}
 		finally
 		{

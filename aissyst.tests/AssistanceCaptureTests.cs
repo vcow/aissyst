@@ -90,6 +90,95 @@ public sealed class AssistanceCaptureTests
 	}
 
 	[Fact]
+	public async Task ShowingDialogWaitsForTranscriptionAndSavingThenShowsOnlyAudioBeforeThePause()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var transcribing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var releaseTranscription = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var saving = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var releaseSave = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Transcriber.Recognize = async (frames, token) =>
+		{
+			if (frames[0].Samples.Span[0] == 0.5f)
+			{
+				transcribing.TrySetResult();
+				await releaseTranscription.Task.WaitAsync(token);
+				return "First question";
+			}
+			return "Later question";
+		};
+		fixture.Database.BeforeAppend = async (message, token) =>
+		{
+			if (message.Text == "First question")
+			{
+				saving.TrySetResult();
+				await releaseSave.Task.WaitAsync(token);
+			}
+		};
+		try
+		{
+			await fixture.Capture.EmitApplicationAsync(Frame(0.5f));
+			var show = fixture.Controller.ShowDialogAsync(pauseAudioProcessing: fixture.Session.PauseAndCompleteRecordingsAsync);
+			await transcribing.Task.WaitAsync(Timeout);
+			Assert.Empty(fixture.Output.Messages);
+			await fixture.Capture.EmitApplicationAsync(Frame(0.25f));
+			var laterFragment = fixture.Session.CompleteRecordingsAsync();
+			releaseTranscription.TrySetResult();
+			await saving.Task.WaitAsync(Timeout);
+			Assert.False(show.IsCompleted);
+			Assert.Empty(fixture.Output.Messages);
+			releaseSave.TrySetResult();
+			await show.WaitAsync(Timeout);
+			Assert.Equal("First question", Assert.Single(fixture.Output.Messages).Text);
+			await laterFragment.WaitAsync(Timeout);
+			await fixture.Controller.WaitForIdleAsync().WaitAsync(Timeout);
+			Assert.Equal(2, fixture.Transcriber.Requests.Count);
+			await fixture.Controller.ShowDialogAsync(pauseAudioProcessing: fixture.Session.PauseAndCompleteRecordingsAsync).WaitAsync(Timeout);
+			Assert.Equal(new[] { "First question", "Later question" }, fixture.Output.Messages.Select(message => message.Text));
+			Assert.Equal(0, fixture.Connector.Requests);
+		}
+		finally
+		{
+			releaseTranscription.TrySetResult();
+			releaseSave.TrySetResult();
+		}
+	}
+
+	[Fact]
+	public async Task ShowingDialogDoesNotWaitForAnActiveLlmReply()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = async (request, token) =>
+		{
+			sent.TrySetResult();
+			await release.Task.WaitAsync(token);
+			return Answer(request);
+		};
+		try
+		{
+			var request = fixture.Controller.SendRequestAsync(RequestType.Advice);
+			await sent.Task.WaitAsync(Timeout);
+			await fixture.Capture.EmitApplicationAsync(Frame(0.5f));
+			await fixture.Controller.ShowDialogAsync(pauseAudioProcessing: fixture.Session.PauseAndCompleteRecordingsAsync).WaitAsync(Timeout);
+			Assert.Equal("Recognized text", Assert.Single(fixture.Output.Messages).Text);
+			Assert.False(request.IsCompleted);
+			release.TrySetResult();
+			await request.WaitAsync(Timeout);
+			await fixture.Controller.ShowDialogAsync(pauseAudioProcessing: fixture.Session.PauseAndCompleteRecordingsAsync).WaitAsync(Timeout);
+			Assert.Equal("Answer", Assert.Single(fixture.Output.Answers));
+			Assert.Single(fixture.Output.Messages);
+		}
+		finally
+		{
+			release.TrySetResult();
+		}
+	}
+
+	[Fact]
 	public async Task SilenceDoesNotWaitForNewTextAndCaptureContinues()
 	{
 		await using var fixture = new Fixture();
@@ -104,8 +193,10 @@ public sealed class AssistanceCaptureTests
 		Assert.Single(fixture.Transcriber.Requests);
 	}
 
-	[Fact]
-	public async Task CancellationDuringTranscriptionResumesCaptureAndReleasesTheAssistanceGuard()
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task CancellationDuringTranscriptionResumesCaptureAndReleasesTheAssistanceGuard(bool showDialog)
 	{
 		await using var fixture = new Fixture();
 		await fixture.InitializeAsync();
@@ -121,7 +212,9 @@ public sealed class AssistanceCaptureTests
 		try
 		{
 			await fixture.Capture.EmitApplicationAsync(Frame(0.5f));
-			var request = fixture.Controller.SendRequestAsync(RequestType.Translate, cancellation.Token, fixture.Session.PauseAndCompleteRecordingsAsync);
+			Task request = showDialog
+				? fixture.Controller.ShowDialogAsync(cancellation.Token, fixture.Session.PauseAndCompleteRecordingsAsync)
+				: fixture.Controller.SendRequestAsync(RequestType.Translate, cancellation.Token, fixture.Session.PauseAndCompleteRecordingsAsync);
 			await entered.Task.WaitAsync(Timeout);
 			await cancellation.CancelAsync();
 			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request.WaitAsync(Timeout));

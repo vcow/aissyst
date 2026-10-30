@@ -132,7 +132,7 @@ public class MainThreadWorker : BackgroundService
 
 			Console.WriteLine("Session started. Waiting for audio.");
 			WriteAssistanceHotkeyHelp();
-			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {KeyName(_hotkeys.FinishRecording)} to send the current fragments and keep listening, "
+			Console.WriteLine($"{(Console.IsInputRedirected ? "Enter" : "Press")} {KeyName(_hotkeys.FinishRecording)} to transcribe and show the current dialog while continuing to listen, "
 				+ $"{_hotkeys.StopSession} to stop listening, {_hotkeys.ClearQueue} to clear pending audio and text, or {_hotkeys.Quit} to quit."
 				+ (Console.IsInputRedirected ? " Then press Enter." : " Ctrl+C also quits."));
 			using var inputCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -162,7 +162,7 @@ public class MainThreadWorker : BackgroundService
 					}
 					if (Matches(command, _hotkeys.FinishRecording))
 					{
-						await session.CompleteRecordingsAsync(stoppingToken);
+						_ = ShowDialogAsync(session, stoppingToken);
 						continue;
 					}
 					if (_hotkeys.TryGetRequestType(command, out var request))
@@ -171,7 +171,7 @@ public class MainThreadWorker : BackgroundService
 						continue;
 					}
 
-					Console.WriteLine($"Unknown command. Use {KeyName(_hotkeys.FinishRecording)} to send the current fragments, {_hotkeys.StopSession} to stop listening, "
+					Console.WriteLine($"Unknown command. Use {KeyName(_hotkeys.FinishRecording)} to show the current dialog, {_hotkeys.StopSession} to stop listening, "
 						+ $"{_hotkeys.ClearQueue} to clear pending audio and text, an assistance hotkey, or {_hotkeys.Quit} to quit.");
 				}
 			}
@@ -205,7 +205,7 @@ public class MainThreadWorker : BackgroundService
 	{
 		Console.WriteLine("Hotkeys:");
 		Console.WriteLine("  Enter - start a session when not listening.");
-		Console.WriteLine($"  {KeyName(_hotkeys.FinishRecording)} - send current audio fragments for transcription and keep listening.");
+		Console.WriteLine($"  {KeyName(_hotkeys.FinishRecording)} - transcribe and show the current dialog, including the latest turn; keep listening.");
 		Console.WriteLine($"  {_hotkeys.StopSession} - stop listening.");
 		Console.WriteLine($"  {_hotkeys.ClearQueue} - clear pending audio and text.");
 		Console.WriteLine($"  {_hotkeys.Quit} / Ctrl+C - quit.");
@@ -228,6 +228,22 @@ public class MainThreadWorker : BackgroundService
 		Console.WriteLine($"  {_hotkeys.Reply} - provide a full answer in English.");
 		Console.WriteLine($"  {_hotkeys.TranslateAndAdvice} - translate and suggest an answer.");
 		Console.WriteLine($"  {_hotkeys.TranslateAndReply} - translate and provide a full answer.");
+	}
+
+	private async Task ShowDialogAsync(CaptureSession session, CancellationToken cancellationToken)
+	{
+		try
+		{
+			await _controller.ShowDialogAsync(cancellationToken, session.PauseAndCompleteRecordingsAsync);
+		}
+		catch (OperationCanceledException)
+		{
+			// Application shutdown cancels the dialog refresh.
+		}
+		catch (Exception)
+		{
+			// The controller logs refresh failures; keyboard input remains available.
+		}
 	}
 
 	private async Task SendHelpRequestAsync(RequestType request, CancellationToken cancellationToken, CaptureSession? session = null)
