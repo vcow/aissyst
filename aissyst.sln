@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "chatgpt-connector", "chatgp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "aissyst.sqlite", "aissyst.sqlite\aissyst.sqlite.csproj", "{2F50FF8E-D494-46F2-A110-F70E120FDEAA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "aissyst.desktop", "aissyst.desktop\aissyst.desktop.csproj", "{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -111,6 +113,18 @@ Global
 		{2F50FF8E-D494-46F2-A110-F70E120FDEAA}.Release|x64.Build.0 = Release|Any CPU
 		{2F50FF8E-D494-46F2-A110-F70E120FDEAA}.Release|x86.ActiveCfg = Release|Any CPU
 		{2F50FF8E-D494-46F2-A110-F70E120FDEAA}.Release|x86.Build.0 = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|x64.Build.0 = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Debug|x86.Build.0 = Debug|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|x64.ActiveCfg = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|x64.Build.0 = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|x86.ActiveCfg = Release|Any CPU
+		{B8F5B1FA-B908-4320-9257-F2006FA4CE2F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -33,6 +33,7 @@ Local transcription does not require sending audio to the LLM. Conversation text
 | --- | --- |
 | `aissyst.core` | Application orchestration, audio and transcription contracts, dialogue processing, session models, and storage contracts. |
 | `aissyst.console` | Console interaction, configurable hotkeys, user output, and dependency injection setup. |
+| `aissyst.desktop` | Avalonia desktop application scaffold; window layout and GUI workflows will be implemented separately. |
 | `aissyst.macos` | macOS audio capture implementation. |
 | `aissyst.windows` | Placeholder for Windows audio capture. |
 | `chatgpt-connector` | ChatGPT authentication and the LLM connector implementation. |
@@ -50,6 +51,8 @@ See [Database operation and context template authoring](aissyst.core/Database/RE
 ## Development status
 
 The project is under active development. macOS audio capture, local transcription, dialogue processing, and assistance request orchestration are implemented.
+
+The [Avalonia desktop project](aissyst.desktop/README.md) provides an additional .NET 10 entry point with a starter window. Run it with `dotnet run --project aissyst.desktop/aissyst.desktop.csproj`. Its floating-window layout and connections to application services are pending UI requirements; the console remains the functional interface.
 
 Sign in with ChatGPT has been implemented and verified. The [ChatGPT connector](chatgpt-connector/README.md) now implements Responses API WebSocket initialization, account-specific model selection, JSON requests and responses, cancellation, token renewal, and connection recovery. LLM requests run one at a time; busy requests are rejected immediately, and emergency cancellation closes the socket and triggers recovery. A minimal real-account WebSocket request succeeded without `stream_id`; the complete console inference workflow still needs live verification.
 
