@@ -62,6 +62,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	private readonly Func<CancellationToken, Task<string>> _getToken;
 	private readonly Func<IResponsesSocket> _createSocket;
 	private readonly string _model;
+	private readonly string? _reasoningEffort;
 	private readonly ChatGPTConnectorOptions _options;
 	private readonly ILogger _logger;
 	private readonly CancellationTokenSource _shutdown = new();
@@ -88,9 +89,10 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 	}
 
 	internal ResponsesConnection(string model, Func<CancellationToken, Task<string>> getToken,
-		ChatGPTConnectorOptions options, ILogger logger, Func<IResponsesSocket>? createSocket = null)
+		ChatGPTConnectorOptions options, ILogger logger, Func<IResponsesSocket>? createSocket = null, string? reasoningEffort = null)
 	{
 		_model = model;
+		_reasoningEffort = reasoningEffort;
 		_getToken = getToken;
 		_options = options;
 		_logger = logger;
@@ -325,7 +327,7 @@ internal sealed class ResponsesConnection : IAsyncDisposable
 			timeout.CancelAfter(_options.ResponseTimeout);
 			try
 			{
-				var payload = ResponsesProtocol.Create(_model, role, text, previousId, generate);
+				var payload = ResponsesProtocol.Create(_model, role, text, previousId, generate, _reasoningEffort);
 				if (_options.LogProtocolPayloads)
 				{
 					_logger.LogInformation("Responses WebSocket SEND: {Payload}", payload);

@@ -55,13 +55,24 @@ internal static class ResponsesProtocol
 
 	internal static string Serialize<T>(T value) => JsonSerializer.Serialize(value, SerializerOptions);
 
-	internal static string Create(string model, string role, string text, string? previousId, bool generate)
+	internal static bool IsSupportedReasoningEffort(string effort) =>
+		effort is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max";
+
+	internal static string Create(string model, string role, string text, string? previousId, bool generate, string? reasoningEffort = null)
 	{
 		var body = new Dictionary<string, object?>
 		{
 			["type"] = "response.create", ["model"] = model, ["store"] = false,
 			["input"] = new[] { new { type = "message", role, content = new[] { new { type = "input_text", text } } } }
 		};
+		if (reasoningEffort != null)
+		{
+			if (!IsSupportedReasoningEffort(reasoningEffort))
+			{
+				throw new ArgumentException("The reasoning effort is not supported by the Responses API.", nameof(reasoningEffort));
+			}
+			body["reasoning"] = new { effort = reasoningEffort };
+		}
 		if (previousId != null)
 		{
 			body["previous_response_id"] = previousId;

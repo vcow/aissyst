@@ -164,6 +164,49 @@ public sealed class ResponsesConnectionTests
 	}
 
 	[Fact]
+	public async Task ReasoningEffortIsSentOnWarmupInitializationRequestsAndReconnection()
+	{
+		using var first = new FakeSocket();
+		using var second = new FakeSocket();
+		var sockets = new Queue<FakeSocket>([first, second]);
+		await using var connection = new ResponsesConnection("model", _ => Task.FromResult("test-access-token"),
+			new ChatGPTConnectorOptions(), NullLogger.Instance, () => sockets.Dequeue(), reasoningEffort: "low");
+		var initial = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		using var parent = initial.Continuation;
+		var response = await connection.SendAsync(new DialogRequest { RequestId = 1 }, parent, default);
+		response.Continuation.Dispose();
+		var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		connection.ConnectionLost += (_, _) => lost.TrySetResult();
+		first.Fail(new IOException("Disconnected"));
+		await lost.Task.WaitAsync(Timeout);
+		await connection.ReconnectAsync(default);
+		var restored = await connection.InitializeSessionAsync("Rules", new Session(), default);
+		restored.Continuation.Dispose();
+		Assert.All(first.Sent.Concat(second.Sent), item => Assert.Equal("low", item.GetProperty("reasoning").GetProperty("effort").GetString()));
+		Assert.Equal(3, first.Sent.Count);
+		Assert.Equal(2, second.Sent.Count);
+	}
+
+	[Theory]
+	[InlineData(null)]
+	[InlineData("none")]
+	[InlineData("low")]
+	[InlineData("max")]
+	public void ProtocolPreservesSelectedReasoningEffortOrOmitsServerDefault(string? effort)
+	{
+		using var document = JsonDocument.Parse(ResponsesProtocol.Create("model", "user", "Text", null, true, effort));
+		if (effort == null)
+		{
+			Assert.False(document.RootElement.TryGetProperty("reasoning", out _));
+		}
+		else
+		{
+			Assert.Equal(effort, document.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
+		}
+		Assert.Throws<ArgumentException>(() => ResponsesProtocol.Create("model", "user", "Text", null, true, "ultra"));
+	}
+
+	[Fact]
 	public async Task BusyRequestsFailImmediatelyWithoutQueueingOrCancelingTheActiveRequest()
 	{
 		using var socket = new FakeSocket();

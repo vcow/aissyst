@@ -190,17 +190,44 @@ public sealed class ChatGPTConnectorTests : IDisposable
 		await connector.InitializeAsync();
 		Assert.Equal(new[] { "model-a", "model-b" }, selector.Models.Select(model => model.Id));
 		Assert.Equal("model-b", selector.GetSelectedModel().Id);
+		var model = selector.GetSelectedModel();
+		Assert.Equal(new[] { "low", "medium", "high" }, model.ReasoningLevels.Select(level => level.Effort));
+		Assert.Equal("medium", model.DefaultReasoningEffort);
+		Assert.Equal("Fast responses", model.ReasoningLevels[0].Description);
+		Assert.Empty(selector.Models[0].ReasoningLevels);
+	}
+
+	[Theory]
+	[InlineData("low", true)]
+	[InlineData("none", false)]
+	[InlineData("ultra", false)]
+	public async Task SelectedReasoningEffortMustBelongToTheSelectedAccountModel(string effort, bool supported)
+	{
+		using var client = CreateClient();
+		var selector = new TestModelSelector { Effort = effort };
+		await using var connector = Create(client, modelSelector: selector);
+		if (supported)
+		{
+			await connector.InitializeAsync();
+		}
+		else
+		{
+			var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => connector.InitializeAsync());
+			Assert.Contains("reasoning effort", exception.Message);
+		}
 	}
 
 	private sealed class TestModelSelector : IModelSelector
 	{
 		internal IReadOnlyList<LLMModel> Models = [];
+		internal string? Effort;
 		public Task InitializeAsync(IReadOnlyList<LLMModel> models, CancellationToken cancellationToken = default)
 		{
 			Models = models;
 			return Task.CompletedTask;
 		}
 		public LLMModel GetSelectedModel() => Models.Last();
+		public string? GetSelectedReasoningEffort() => Effort;
 	}
 
 	private ChatGPTConnector Create(HttpClient client, IChatGPTAuthorization? authorization = null, IModelSelector? modelSelector = null)
@@ -222,12 +249,20 @@ public sealed class ChatGPTConnectorTests : IDisposable
 		{
 			Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
 			Assert.Equal("access-token", request.Headers.Authorization?.Parameter);
-			return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { models = new[]
-			{
-				new { slug = "model-a", display_name = "Model A", visibility = "list" },
-				new { slug = "hidden", display_name = "Hidden", visibility = "hidden" },
-				new { slug = "model-b", display_name = "Model B", visibility = "list" }
-			} }) };
+			return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""
+				{"models":[
+				 {"slug":"model-a","display_name":"Model A","visibility":"list"},
+				 {"slug":"hidden","display_name":"Hidden","visibility":"hidden"},
+				 {"slug":"model-b","display_name":"Model B","visibility":"list","default_reasoning_level":"medium",
+				  "supported_reasoning_levels":[
+				   {"effort":"low","description":"Fast responses"},
+				   {"effort":"medium","description":"Balanced responses"},
+				   {"effort":"high","description":"Deeper reasoning"},
+				   {"effort":"ultra","description":"Automatic agent delegation"},
+				   {"effort":"low","description":"Duplicate"},
+				   {"description":"Missing effort"},null]}
+				]}
+				""", Encoding.UTF8, "application/json") };
 		}
 		Assert.Equal("https://auth.openai.com/api/accounts/oauth/token", request.RequestUri?.AbsoluteUri);
 		var fields = ParseForm(await request.Content!.ReadAsStringAsync());

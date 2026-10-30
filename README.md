@@ -38,7 +38,7 @@ Local transcription does not require sending audio to the LLM. Conversation text
 | `aissyst.sqlite` | SQLite storage, context template import, and self-contained session export and import. |
 | `aissyst.tests` | Automated tests for processing, orchestration, sessions, and console workflows. |
 
-The solution uses .NET 10, Generic Host, dependency injection, and standard C# events for notifications.
+The solution uses .NET 10, Generic Host, dependency injection, and standard C# events for notifications. At startup, users select an account-available model and one of its advertised reasoning effort levels. The selected effort is retained across reconnections; a server-default option is also available.
 
 `SessionModel` owns request snapshots, response validation, and the confirmed summary/continuation state. The connector returns parsed replies with opaque continuation leases and reports connection loss; it does not apply application state. `DialogCoordinator` serializes transcript processing and restoration and notifies the controller, which owns display updates.
 

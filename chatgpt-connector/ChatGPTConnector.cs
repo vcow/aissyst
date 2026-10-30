@@ -151,11 +151,17 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 			var models = await GetModelsAsync(profile.AccessToken, cancellationToken);
 			await _modelSelector.InitializeAsync(models, cancellationToken);
 			var selected = _modelSelector.GetSelectedModel();
-			if (!models.Any(model => model.Id == selected.Id))
+			var catalogModel = models.FirstOrDefault(model => model.Id == selected.Id);
+			if (catalogModel == null)
 			{
 				throw new InvalidOperationException("The selected model is not available for this account.");
 			}
-			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger);
+			var effort = _modelSelector.GetSelectedReasoningEffort();
+			if (effort != null && !catalogModel.ReasoningLevels.Any(level => level.Effort == effort))
+			{
+				throw new InvalidOperationException("The selected reasoning effort is not available for this model.");
+			}
+			_responses = new ResponsesConnection(selected.Id, GetAccessTokenAsync, _options, _logger, reasoningEffort: effort);
 			_responses.ConnectionLost += (_, _) => ConnectionLost?.Invoke(this, EventArgs.Empty);
 		}
 	}
@@ -173,9 +179,24 @@ public sealed class ChatGPTConnector : ILLMConnector, IAsyncDisposable
 			?? throw new InvalidDataException("The model catalog is empty.");
 		return document.RootElement.GetProperty("models").EnumerateArray()
 			.Where(model => OptionalString(model, "visibility") == "list")
-			.Select(model => new LLMModel(OptionalString(model, "slug")
-				?? throw new InvalidDataException("A model slug is missing."),
-				OptionalString(model, "display_name") ?? OptionalString(model, "slug")!)).ToArray();
+			.Select(ParseModel).ToArray();
+	}
+
+	private static LLMModel ParseModel(JsonElement model)
+	{
+		var id = OptionalString(model, "slug") ?? throw new InvalidDataException("A model slug is missing.");
+		var levels = model.TryGetProperty("supported_reasoning_levels", out var supported) && supported.ValueKind == JsonValueKind.Array
+			? supported.EnumerateArray()
+				.Where(level => level.ValueKind == JsonValueKind.Object)
+				.Select(level => new LLMReasoningLevel(OptionalString(level, "effort") ?? "", OptionalString(level, "description") ?? ""))
+				.Where(level => ResponsesProtocol.IsSupportedReasoningEffort(level.Effort))
+				.DistinctBy(level => level.Effort).ToArray()
+			: [];
+		return new LLMModel(id, OptionalString(model, "display_name") ?? id)
+		{
+			ReasoningLevels = levels,
+			DefaultReasoningEffort = OptionalString(model, "default_reasoning_level")
+		};
 	}
 
 	private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
