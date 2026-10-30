@@ -167,7 +167,7 @@ public class MainThreadWorker : BackgroundService
 					}
 					if (_hotkeys.TryGetRequestType(command, out var request))
 					{
-						_ = SendHelpRequestAsync(request, stoppingToken);
+						_ = SendHelpRequestAsync(request, stoppingToken, session);
 						continue;
 					}
 
@@ -230,15 +230,16 @@ public class MainThreadWorker : BackgroundService
 		Console.WriteLine($"  {_hotkeys.TranslateAndReply} - translate and provide a full answer.");
 	}
 
-	private async Task SendHelpRequestAsync(RequestType request, CancellationToken cancellationToken)
+	private async Task SendHelpRequestAsync(RequestType request, CancellationToken cancellationToken, CaptureSession? session = null)
 	{
 		try
 		{
-			await _controller.SendRequestAsync(request, cancellationToken);
+			await _controller.SendRequestAsync(request, cancellationToken,
+				session == null ? null : session.PauseAndCompleteRecordingsAsync);
 		}
 		catch (OperationCanceledException)
 		{
-			// A newer request or application shutdown cancels the previous request.
+			// Application shutdown cancels the assistance request.
 		}
 		catch (Exception)
 		{

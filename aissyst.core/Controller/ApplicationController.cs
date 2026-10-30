@@ -44,6 +44,7 @@ public class ApplicationController : IAsyncDisposable
 	private bool _isDisposed;
 	private Task? _disposeTask;
 	private int _lastPrintedAnswerId;
+	private bool _requestInProgress;
 
 	public ApplicationController(ITranscriber transcriber, DialogCoordinator dialog,
 		ICaptureSession captureSession, ILogger<ApplicationController> logger, ILLMConnector llmConnector,
@@ -175,7 +176,8 @@ public class ApplicationController : IAsyncDisposable
 		}
 	}
 
-	public async Task<DialogResponse?> SendRequestAsync(RequestType request, CancellationToken cancellationToken = default)
+	public async Task<DialogResponse?> SendRequestAsync(RequestType request, CancellationToken cancellationToken = default,
+		Func<CancellationToken, Task<IDisposable>>? pauseAudioProcessing = null)
 	{
 		CancellationToken requestToken = default;
 		try
@@ -185,9 +187,14 @@ public class ApplicationController : IAsyncDisposable
 			{
 				ObjectDisposedException.ThrowIf(_isDisposed, this);
 				cancellationToken.ThrowIfCancellationRequested();
+				if (_requestInProgress || _llmConnector.IsBusy)
+				{
+					throw new InvalidOperationException("An assistance request is already in progress. Wait for it to finish.");
+				}
 				var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_stoppingToken, cancellationToken);
 				requestToken = cancellation.Token;
-				operation = SendRequestCoreAsync(request, cancellation);
+				_requestInProgress = true;
+				operation = SendRequestCoreAsync(request, cancellation, pauseAudioProcessing);
 				_ = RunTrackedAsync(() => ObserveRequestCompletionAsync(operation), isRequest: true);
 			}
 			return await operation;
@@ -204,12 +211,29 @@ public class ApplicationController : IAsyncDisposable
 	}
 
 	private async Task<DialogResponse?> SendRequestCoreAsync(RequestType request,
-		CancellationTokenSource cancellation)
+		CancellationTokenSource cancellation, Func<CancellationToken, Task<IDisposable>>? pauseAudioProcessing)
 	{
 		try
 		{
 			var model = _sessionModel ?? throw new InvalidOperationException("The session model is not configured.");
-			var result = await model.SendRequestAsync(request, cancellation.Token);
+			Task<DialogResponse?> response;
+			IDisposable? pause = null;
+			try
+			{
+				if (pauseAudioProcessing != null)
+				{
+					pause = await pauseAudioProcessing(cancellation.Token);
+				}
+				await WaitForIdleAsync(cancellation.Token);
+				cancellation.Token.ThrowIfCancellationRequested();
+				// The model snapshots the dialog synchronously before returning the response task.
+				response = model.SendRequestAsync(request, cancellation.Token);
+			}
+			finally
+			{
+				pause?.Dispose();
+			}
+			var result = await response;
 			cancellation.Token.ThrowIfCancellationRequested();
 			if (result != null && !string.IsNullOrWhiteSpace(result.Message))
 			{
@@ -227,6 +251,10 @@ public class ApplicationController : IAsyncDisposable
 		}
 		finally
 		{
+			lock (_trackedTasksLock)
+			{
+				_requestInProgress = false;
+			}
 			cancellation.Dispose();
 		}
 	}

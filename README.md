@@ -20,8 +20,9 @@ Assistance is requested explicitly rather than automatically for every transcrib
 - Microphone and application audio are captured independently.
 - Local transcription currently uses the English Whisper `small.en-q5_1` model.
 - The model is downloaded when needed and is not stored in the repository.
-- Bounded queues separate audio capture, transcription, and text processing. When a queue fills up, the oldest pending items are discarded with a log message.
+- Bounded queues separate audio capture, transcription, and text processing. Full transcription/text queues discard the oldest pending items with a log message. The capture event channel holds 512 events; when full, it logs a warning and waits for capacity, which can put pressure on source buffers.
 - Hotkeys allow the user to finish the current audio fragments, stop listening, clear pending work, and request assistance.
+- Assistance hotkeys flush the current recordings and pause capture event processing while pending transcription and text processing finish. Sources continue buffering audio in the channel; timer events are skipped during the pause. Processing resumes as soon as the LLM request snapshot is formed, before the reply arrives. Repeated assistance requests are rejected throughout preparation and generation. Space still only finishes current recordings and keeps processing audio.
 
 Local transcription does not require sending audio to the LLM. Conversation text and the prepared context are used for assistance requests.
 

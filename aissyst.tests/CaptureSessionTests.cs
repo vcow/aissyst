@@ -11,6 +11,7 @@ namespace aissyst.tests;
 public class CaptureSessionTests
 {
 	private readonly ConcurrentQueue<(AudioSourceType Source, IReadOnlyList<AudioFrame> Frames)> _records = new();
+	private readonly CaptureLogger _logger = new();
 	private static readonly AudioInputDevice Microphone = new("test-microphone", "Test microphone", 1, true);
 	private static readonly AudioApplication Application = new(123, "Test application", false, new[] { 123 });
 
@@ -194,6 +195,92 @@ public class CaptureSessionTests
 		Assert.False(session.Completion.IsCompleted);
 	}
 
+	[Fact]
+	public async Task PausedCompletionFlushesBothSourcesAndBuffersNewFramesUntilResumed()
+	{
+		using var host = CreateHost();
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		session.Start();
+		await capture.EmitMicrophoneAsync(Frame(0.5f));
+		await capture.EmitApplicationAsync(Frame(0.25f));
+		using var pause = await session.PauseAndCompleteRecordingsAsync();
+		Assert.Equal(2, _records.Count);
+		await capture.EmitMicrophoneAsync(Frame(0.75f));
+		await capture.EmitApplicationAsync(Frame(-0.5f));
+		var completion = session.CompleteRecordingsAsync();
+		Assert.False(completion.IsCompleted);
+		Assert.Equal(2, _records.Count);
+		pause.Dispose();
+		await completion.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(4, _records.Count);
+		Assert.Equal(new[] { 0.5f, 0.25f, 0.75f, -0.5f }, _records.Select(record => record.Frames[0].Samples.Span[0]));
+	}
+
+	[Fact]
+	public async Task PausedChannelBuffers512FramesSkipsTimerEventsAndLogsBackpressure()
+	{
+		using var host = CreateHost();
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		var capture = host.Services.GetRequiredService<TestAudioCapture>();
+		session.Start();
+		using var pause = await session.PauseAndCompleteRecordingsAsync();
+		// Several timer periods pass while no audio is processed.
+		await Task.Delay(200);
+		for (var index = 0; index < 512; index++)
+		{
+			await capture.EmitMicrophoneAsync(Frame(0.5f));
+		}
+		Assert.Empty(_logger.Warnings);
+		var blocked = capture.EmitMicrophoneAsync(Frame(0.5f));
+		await SessionModelTests.WaitUntilAsync(() => !_logger.Warnings.IsEmpty);
+		Assert.False(blocked.IsCompleted);
+		Assert.Contains("512", Assert.Single(_logger.Warnings));
+		pause.Dispose();
+		await blocked.WaitAsync(TimeSpan.FromSeconds(5));
+		await session.CompleteRecordingsAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Equal(513 * 320, _records.Sum(record => record.Frames.Sum(frame => frame.Samples.Length)));
+	}
+
+	[Fact]
+	public async Task CanceledPauseCommandDoesNotLeaveTheReaderPausedWhenItReachesTheQueueHead()
+	{
+		using var host = CreateHost();
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		session.Start();
+		using var firstPause = await session.PauseAndCompleteRecordingsAsync();
+		using var cancellation = new CancellationTokenSource();
+		var pendingPause = session.PauseAndCompleteRecordingsAsync(cancellation.Token);
+		Assert.False(pendingPause.IsCompleted);
+		await cancellation.CancelAsync();
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pendingPause.WaitAsync(TimeSpan.FromSeconds(5)));
+		firstPause.Dispose();
+		await host.Services.GetRequiredService<TestAudioCapture>().EmitMicrophoneAsync(Frame(0.5f));
+		await session.CompleteRecordingsAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Single(_records);
+	}
+
+	[Fact]
+	public async Task DisposalWhilePausedDrainsBufferedFramesWithoutWaitingForThePauseOwner()
+	{
+		using var host = CreateHost();
+		await using var scope = host.Services.CreateAsyncScope();
+		scope.ServiceProvider.GetRequiredService<CaptureSessionContext>().Initialize(Microphone, Application);
+		var session = scope.ServiceProvider.GetRequiredService<CaptureSession>();
+		session.Start();
+		using var pause = await session.PauseAndCompleteRecordingsAsync();
+		await host.Services.GetRequiredService<TestAudioCapture>().EmitApplicationAsync(Frame(0.5f));
+		await session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(session.Completion.IsCompletedSuccessfully);
+		Assert.Single(_records);
+	}
+
 	private static AudioFrame Frame(float value)
 	{
 		return new AudioFrame(Enumerable.Repeat(value, 320).ToArray(), new AudioFormat(16000, 1), TimeSpan.Zero);
@@ -203,6 +290,7 @@ public class CaptureSessionTests
 	{
 		var builder = Host.CreateApplicationBuilder();
 		builder.Logging.ClearProviders();
+		builder.Services.AddSingleton<ILogger<CaptureSession>>(_logger);
 		builder.Services.AddScoped<CaptureSessionContext>();
 		builder.Services.AddScoped<CaptureSession>();
 		builder.Services.AddSingleton<IApplicationSettings>(new ApplicationSettings(silenceTimeout ?? TimeSpan.FromMinutes(1),
@@ -216,5 +304,19 @@ public class CaptureSessionTests
 		records.MicrophoneRecordingCompleted += frames => _records.Enqueue((AudioSourceType.Microphone, frames));
 		records.ApplicationRecordingCompleted += frames => _records.Enqueue((AudioSourceType.Application, frames));
 		return host;
+	}
+
+	private sealed class CaptureLogger : ILogger<CaptureSession>
+	{
+		internal readonly ConcurrentQueue<string> Warnings = new();
+		public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+		public bool IsEnabled(LogLevel logLevel) => true;
+		public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+		{
+			if (logLevel == LogLevel.Warning)
+			{
+				Warnings.Enqueue(formatter(state, exception));
+			}
+		}
 	}
 }

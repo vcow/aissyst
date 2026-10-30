@@ -20,7 +20,7 @@ internal sealed class ResponsesSocket : IResponsesSocket
 		_socket.Options.CollectHttpResponseDetails = true;
 		_socket.Options.SetRequestHeader("Authorization", "Bearer " + accessToken);
 		_socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-		_socket.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
+		_socket.Options.KeepAliveTimeout = TimeSpan.FromMinutes(1);
 		try
 		{
 			await _socket.ConnectAsync(new Uri("wss://api.openai.com/v1/responses"), cancellationToken);

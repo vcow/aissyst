@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using aissyst.core;
 using aissyst.core.Audio;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace aissyst.console;
 
@@ -12,21 +13,26 @@ public sealed class CaptureSession : IAsyncDisposable
 	private readonly IAudioCapture _audioCapture;
 	private readonly IApplicationSettings _settings;
 	private readonly ConsoleCaptureSession _records;
+	private readonly ILogger<CaptureSession> _logger;
 	private readonly Stopwatch _clock = new();
+	private const int EventCapacity = 512;
 
 	private readonly Channel<SessionEvent> _events = Channel.CreateBounded<SessionEvent>(
-		new BoundedChannelOptions(256) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+		new BoundedChannelOptions(EventCapacity) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
 
 	private bool _started;
+	private int _processingPaused;
+	private int _channelFullLogged;
 	private Task? _disposeTask;
 
 	public CaptureSession(CaptureSessionContext context, IHostApplicationLifetime applicationLifetime,
-		IAudioCapture audioCapture, IApplicationSettings settings, ConsoleCaptureSession records)
+		IAudioCapture audioCapture, IApplicationSettings settings, ConsoleCaptureSession records, ILogger<CaptureSession> logger)
 	{
 		Context = context;
 		_audioCapture = audioCapture;
 		_settings = settings;
 		_records = records;
+		_logger = logger;
 		_cancellation = CancellationTokenSource.CreateLinkedTokenSource(applicationLifetime.ApplicationStopping);
 	}
 
@@ -57,7 +63,25 @@ public sealed class CaptureSession : IAsyncDisposable
 		Completion = RunAsync(_cancellation.Token);
 	}
 
-	public async Task CompleteRecordingsAsync(CancellationToken cancellationToken = default)
+	public Task CompleteRecordingsAsync(CancellationToken cancellationToken = default) =>
+		CompleteRecordingsAsync(null, cancellationToken);
+
+	public async Task<IDisposable> PauseAndCompleteRecordingsAsync(CancellationToken cancellationToken = default)
+	{
+		var pause = new ProcessingPause();
+		try
+		{
+			await CompleteRecordingsAsync(pause, cancellationToken);
+			return pause;
+		}
+		catch
+		{
+			pause.Dispose();
+			throw;
+		}
+	}
+
+	private async Task CompleteRecordingsAsync(ProcessingPause? pause, CancellationToken cancellationToken)
 	{
 		if (!_started || Completion.IsCompleted)
 		{
@@ -68,7 +92,7 @@ public sealed class CaptureSession : IAsyncDisposable
 		var acknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		try
 		{
-			await _events.Writer.WriteAsync(new SessionEvent(EventKind.Complete, Acknowledgement: acknowledgement), cancellationToken);
+			await WriteEventAsync(new SessionEvent(EventKind.Complete, Acknowledgement: acknowledgement, Pause: pause), cancellationToken);
 		}
 		catch (ChannelClosedException)
 		{
@@ -105,6 +129,10 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			await foreach (var item in _events.Reader.ReadAllAsync(cancellationToken))
 			{
+				if (_events.Reader.Count < EventCapacity / 2)
+				{
+					Interlocked.Exchange(ref _channelFullLogged, 0);
+				}
 				await HandleAsync(item, microphone, application);
 			}
 		}
@@ -142,7 +170,7 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			await foreach (var frame in source(cancellationToken))
 			{
-				await _events.Writer.WriteAsync(new SessionEvent(EventKind.Frame, sourceType, frame, At: _clock.Elapsed), cancellationToken);
+				await WriteEventAsync(new SessionEvent(EventKind.Frame, sourceType, frame, At: _clock.Elapsed), cancellationToken);
 			}
 
 			if (!cancellationToken.IsCancellationRequested)
@@ -157,7 +185,7 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			try
 			{
-				await _events.Writer.WriteAsync(new SessionEvent(EventKind.Failure, sourceType, Error: exception), cancellationToken);
+				await WriteEventAsync(new SessionEvent(EventKind.Failure, sourceType, Error: exception), cancellationToken);
 			}
 			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 			{
@@ -172,11 +200,33 @@ public sealed class CaptureSession : IAsyncDisposable
 		{
 			while (await timer.WaitForNextTickAsync(cancellationToken))
 			{
-				_events.Writer.TryWrite(new SessionEvent(EventKind.Tick, At: _clock.Elapsed));
+				if (Volatile.Read(ref _processingPaused) == 0
+					&& !_events.Writer.TryWrite(new SessionEvent(EventKind.Tick, At: _clock.Elapsed)))
+				{
+					LogChannelFull();
+				}
 			}
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
+		}
+	}
+
+	private async ValueTask WriteEventAsync(SessionEvent item, CancellationToken cancellationToken)
+	{
+		cancellationToken.ThrowIfCancellationRequested();
+		if (!_events.Writer.TryWrite(item))
+		{
+			LogChannelFull();
+			await _events.Writer.WriteAsync(item, cancellationToken);
+		}
+	}
+
+	private void LogChannelFull()
+	{
+		if (_events.Reader.Count >= EventCapacity && Interlocked.Exchange(ref _channelFullLogged, 1) == 0)
+		{
+			_logger.LogWarning("Capture event channel is full (capacity {Capacity}). Audio producers may wait; source buffers may overflow.", EventCapacity);
 		}
 	}
 
@@ -199,7 +249,23 @@ public sealed class CaptureSession : IAsyncDisposable
 				try
 				{
 					await CompleteAsync(microphone, application);
-					item.Acknowledgement!.TrySetResult();
+					if (item.Pause != null && !_cancellation.IsCancellationRequested)
+					{
+						Volatile.Write(ref _processingPaused, 1);
+						try
+						{
+							item.Acknowledgement!.TrySetResult();
+							await item.Pause.Resumed.Task.WaitAsync(_cancellation.Token);
+						}
+						finally
+						{
+							Volatile.Write(ref _processingPaused, 0);
+						}
+					}
+					else
+					{
+						item.Acknowledgement!.TrySetResult();
+					}
 				}
 				catch (Exception exception)
 				{
@@ -256,11 +322,18 @@ public sealed class CaptureSession : IAsyncDisposable
 		Failure
 	}
 
+	private sealed class ProcessingPause : IDisposable
+	{
+		internal readonly TaskCompletionSource Resumed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		public void Dispose() => Resumed.TrySetResult();
+	}
+
 	private sealed record SessionEvent(
 		EventKind Kind,
 		AudioSourceType Source = AudioSourceType.Microphone,
 		AudioFrame? Frame = null,
 		Exception? Error = null,
 		TaskCompletionSource? Acknowledgement = null,
-		TimeSpan At = default);
+		TimeSpan At = default,
+		ProcessingPause? Pause = null);
 }
