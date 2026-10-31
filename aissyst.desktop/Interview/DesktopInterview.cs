@@ -2,6 +2,7 @@ using aissyst.core;
 using aissyst.core.Audio;
 using aissyst.core.Controller;
 using aissyst.core.LLMConnector.Model;
+using aissyst.core.LLMConnector.DTO;
 using aissyst.desktop.Selectors;
 using aissyst.desktop.Wizard;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,12 @@ internal sealed class DesktopInterview(ApplicationController controller, Session
 	private volatile bool _started;
 	public bool IsInitialized { get; private set; }
 	public bool IsStarted => _started;
+	public bool IsConnected => IsInitialized && model.IsReady && !_shutdown.IsCancellationRequested;
+	public event Action? ConnectionChanged
+	{
+		add => model.ReadinessChanged += value;
+		remove => model.ReadinessChanged -= value;
+	}
 	public event Action? StateChanged;
 
 	public async Task WaitForStartAsync(CancellationToken cancellationToken = default)
@@ -118,7 +125,7 @@ internal sealed class DesktopInterview(ApplicationController controller, Session
 		using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
 		if (!await _forceGate.WaitAsync(0, cancellation.Token))
 		{
-			return;
+			throw new InvalidOperationException("A Force Dialog command is already being processed.");
 		}
 		try
 		{
@@ -136,6 +143,14 @@ internal sealed class DesktopInterview(ApplicationController controller, Session
 	}
 
 	public Task ReconnectAsync(CancellationToken cancellationToken = default) => model.ReconnectAsync(cancellationToken);
+
+	public async Task SendRequestAsync(RequestType request, CancellationToken cancellationToken = default)
+	{
+		using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+		var session = _started ? _capture : null;
+		await controller.SendRequestAsync(request, cancellation.Token,
+			session == null ? null : session.PauseAndCompleteRecordingsAsync);
+	}
 
 	public ValueTask DisposeAsync() => new(_disposal ??= DisposeCoreAsync());
 

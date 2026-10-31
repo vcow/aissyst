@@ -55,6 +55,7 @@ internal static class DesktopServices
 		services.AddSingleton<ITextProcessor, TextProcessor>();
 		services.AddSingleton<DialogCoordinator>();
 		services.AddSingleton<DialogViewModel>();
+		services.AddSingleton<PromptViewModel>();
 		services.AddSingleton<DesktopDialogService>();
 		services.AddSingleton(new SessionRecoveryOptions());
 		services.AddSingleton<IOutput, DesktopOutput>();
@@ -64,6 +65,8 @@ internal static class DesktopServices
 		services.AddSingleton<SessionModel>();
 		services.AddSingleton<ApplicationController>();
 		services.AddSingleton<DesktopInterview>();
+		services.AddSingleton<InterviewCommands>();
+		services.AddSingleton<DesktopPromptService>();
 		return services;
 	}
 }

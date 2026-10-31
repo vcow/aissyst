@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:aissyst.desktop.ViewModels"
+        xmlns:views="using:aissyst.desktop.Views"
         x:Class="aissyst.desktop.Views.SettingsWindow"
         x:DataType="vm:SettingsViewModel"
         Title="aissyst - Settings" Width="680" Height="610" MinWidth="520" MinHeight="440"
@@ -17,7 +18,7 @@
     <DockPanel>
         <NativeMenuBar DockPanel.Dock="Top" />
     <Grid Margin="20" RowDefinitions="Auto,*,Auto,Auto" RowSpacing="12">
-        <TextBlock Text="Changes are saved for the next application launch. Restart aissyst to apply them."
+        <TextBlock Text="Prompt font size and shortcuts apply after Save. Other changes apply on the next application launch."
                    Classes="description" />
         <TabControl x:Name="SettingsTabs" Grid.Row="1" IsEnabled="{Binding IsEditing}">
             <TabItem Header="General">
@@ -95,6 +96,27 @@
                         <TextBlock Text="Language code" FontWeight="SemiBold" />
                         <TextBox x:Name="Language" Text="{Binding Language, Mode=TwoWay}" />
                         <TextBlock Text="Use a language supported by the chosen model. The default English-only model uses en." Classes="description" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Prompt &amp; Hotkeys">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="4,16,16,8" Spacing="10">
+                        <TextBlock Text="Prompt font size" FontWeight="SemiBold" />
+                        <NumericUpDown x:Name="PromptFontSize" Value="{Binding PromptFontSize, Mode=TwoWay}"
+                                       Minimum="8" Maximum="72" Increment="1" FormatString="0.#" />
+                        <TextBlock Text="Shortcuts work only while an aissyst window has focus. Click a field and press a key combination with Ctrl, Alt, Shift or Command. Clear with Backspace or Delete."
+                                   Classes="description" />
+                        <ItemsControl ItemsSource="{Binding Hotkeys}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:HotkeyViewModel">
+                                    <Grid ColumnDefinitions="*,*" ColumnSpacing="12" Margin="0,4">
+                                        <TextBlock Text="{Binding Caption}" VerticalAlignment="Center" />
+                                        <views:HotkeyTextBox Grid.Column="1" Text="{Binding Gesture, Mode=TwoWay}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

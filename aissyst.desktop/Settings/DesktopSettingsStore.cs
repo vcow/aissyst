@@ -14,6 +14,7 @@ internal sealed class DesktopSettingsStore
 	public DesktopApplicationSettings Active { get; }
 	public DesktopApplicationSettings Saved { get; private set; }
 	public Exception? LoadError { get; }
+	public event Action? SavedChanged;
 
 	public DesktopSettingsStore(string? filePath = null)
 	{
@@ -54,5 +55,6 @@ internal sealed class DesktopSettingsStore
 			}
 			_save.Release();
 		}
+		SavedChanged?.Invoke();
 	}
 }

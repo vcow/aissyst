@@ -83,9 +83,9 @@ public sealed class DesktopInterviewTests : IDisposable
 		Assert.Equal(new[] { "Log", "Dialog", "Prompt", "|", "Fit to Screen" }, Captions(Find(fixture.Main, "Windows").Menu!));
 		foreach (var caption in new[] { "Translate", "Suggest", "Answer", "Translate & Answer", "Translate & Suggest" })
 		{
-			Assert.False(Find(fixture.Main, "Interview", caption).IsEnabled);
+			Assert.True(Find(fixture.Main, "Interview", caption).IsEnabled);
 		}
-		Assert.False(Find(fixture.Main, "Windows", "Prompt").IsEnabled);
+		Assert.True(Find(fixture.Main, "Windows", "Prompt").IsEnabled);
 		Assert.Equal(MenuItemToggleType.CheckBox, Find(fixture.Main, "Windows", "Prompt").ToggleType);
 		Assert.True(Find(fixture.Main, "Windows", "Log").IsChecked);
 		Assert.True(Find(fixture.Main, "Windows", "Dialog").IsChecked);
@@ -165,7 +165,7 @@ public sealed class DesktopInterviewTests : IDisposable
 	});
 
 	[Fact]
-	public Task ForceDialogWaitsForTranscriptionAndSkipsRepeatedClicks() => OnUI(async () =>
+	public Task ForceDialogWaitsForTranscriptionAndRejectsRepeatedClicksWithoutDisablingCommands() => OnUI(async () =>
 	{
 		await using var fixture = new Fixture();
 		await fixture.InitializeAsync();
@@ -186,7 +186,7 @@ public sealed class DesktopInterviewTests : IDisposable
 			await fixture.Audio.EmitApplicationAsync(Frame(0.5f));
 			Click(Find(fixture.Main, "Interview", "Force Dialog"));
 			await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-			Assert.False(Find(fixture.Main, "Interview", "Force Dialog").IsEnabled);
+			Assert.True(Find(fixture.Main, "Interview", "Force Dialog").IsEnabled);
 			Click(Find(fixture.Main, "Interview", "Force Dialog"));
 			Assert.Single(fixture.Transcriber.Requests);
 			release.TrySetResult();
@@ -200,7 +200,7 @@ public sealed class DesktopInterviewTests : IDisposable
 		}
 	});
 
-	private sealed class Fixture : IAsyncDisposable
+	internal sealed class Fixture : IAsyncDisposable
 	{
 		internal readonly MainWindow Main = new() { DataContext = new LogViewModel() };
 		internal readonly TestAudioCapture Audio = new();
@@ -214,6 +214,10 @@ public sealed class DesktopInterviewTests : IDisposable
 		internal readonly DesktopInterview Interview;
 		internal readonly DesktopDialogService Dialog;
 		internal readonly DesktopApplicationShell Shell;
+		internal readonly InterviewCommands Commands;
+		internal readonly DesktopPromptService Prompt;
+		internal readonly DesktopSettingsStore Settings;
+		internal readonly DesktopSettingsDialog SettingsDialog;
 		internal Task? Starting;
 		private readonly CancellationTokenSource _cancel = new();
 		internal Fixture(bool invalidCaptureSettings = false)
@@ -221,6 +225,7 @@ public sealed class DesktopInterviewTests : IDisposable
 			var state = new DesktopWindowState();
 			Wizard = new WizardService(NullLogger<WizardService>.Instance, state);
 			var settings = new DesktopSettingsStore(Path.Combine(Path.GetTempPath(), $"aissyst-test-{Guid.NewGuid():N}.json"));
+			Settings = settings;
 			var services = DesktopServices.Create(Main, (LogViewModel)Main.DataContext!, settings, state);
 			services.AddSingleton<IDatabase>(new TestSessionDatabase());
 			services.AddSingleton<ISessionSelector>(new TestSessionSelector());
@@ -239,10 +244,13 @@ public sealed class DesktopInterviewTests : IDisposable
 			Provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 			Interview = Provider.GetRequiredService<DesktopInterview>();
 			Dialog = Provider.GetRequiredService<DesktopDialogService>();
-			var settingsDialog = new DesktopSettingsDialog(settings, () => Main, () => [Main, Dialog.Window!],
+			Commands = Provider.GetRequiredService<InterviewCommands>();
+			Prompt = Provider.GetRequiredService<DesktopPromptService>();
+			var settingsDialog = new DesktopSettingsDialog(settings, () => Main, () => new Window[] { Main, Dialog.Window!, Prompt.Window! },
 				NullLogger<SettingsWindow>.Instance, state);
+			SettingsDialog = settingsDialog;
 			Shell = new DesktopApplicationShell(Application.Current!, Main, settingsDialog, () => { },
-				NullLogger<DesktopApplicationShell>.Instance, Dialog, state, Interview);
+				NullLogger<DesktopApplicationShell>.Instance, Dialog, state, Interview, Commands, Prompt);
 			Shell.OpenStartupWindows();
 		}
 		internal Task InitializeAsync() => Provider.GetRequiredService<ApplicationController>().InitializeAsync(_cancel.Token);
@@ -265,6 +273,7 @@ public sealed class DesktopInterviewTests : IDisposable
 			Shell.AllowClose();
 			Main.Close();
 			_cancel.Dispose();
+			if (File.Exists(Settings.FilePath)) { File.Delete(Settings.FilePath); }
 		}
 	}
 	private sealed class SetupWizard(WizardService ready) : IWizardService, IAsyncDisposable

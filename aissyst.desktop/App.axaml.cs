@@ -45,7 +45,8 @@ public partial class App : Application
 			_shell = new DesktopApplicationShell(this, main, _settingsDialog, () => BeginShutdown(desktop),
 				_services.GetRequiredService<ILogger<DesktopApplicationShell>>(),
 				_services.GetRequiredService<DesktopDialogService>(), windowState,
-				_services.GetRequiredService<DesktopInterview>());
+				_services.GetRequiredService<DesktopInterview>(),
+				_services.GetRequiredService<InterviewCommands>(), _services.GetRequiredService<DesktopPromptService>());
 			var stateLogger = _services.GetRequiredService<ILogger<DesktopWindowState>>();
 			windowState.SaveFailed += exception => stateLogger.LogWarning(exception, "Failed to save window geometry and visibility.");
 			stateLogger.LogInformation("Window state file: {Path}. Loaded log: {LogState}; dialog: {DialogState}.",

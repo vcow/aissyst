@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:aissyst.desktop.ViewModels"
+        xmlns:commands="using:aissyst.desktop.Interview"
+        xmlns:md="clr-namespace:Markdown.Avalonia.Full;assembly=Markdown.Avalonia.Full"
+        xmlns:edit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+        x:Class="aissyst.desktop.Views.PromptWindow"
+        x:DataType="vm:PromptViewModel"
+        Title="aissyst - Prompt" Width="640" Height="560" MinWidth="340" MinHeight="240"
+        WindowStartupLocation="CenterScreen" Topmost="True">
+    <DockPanel>
+        <NativeMenuBar DockPanel.Dock="Top" />
+        <StackPanel DockPanel.Dock="Top" Margin="10,10,10,0" Spacing="8">
+            <ItemsControl ItemsSource="{Binding Commands}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="commands:InterviewCommand">
+                        <Button Content="{Binding Caption}" Command="{Binding}" Margin="0,0,6,6"
+                                ToolTip.Tip="{Binding Shortcut}" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <StackPanel x:Name="ProcessingIndicator" IsVisible="{Binding IsProcessing}" Spacing="4">
+                <TextBlock Text="Processing request…" FontSize="12" />
+                <ProgressBar IsIndeterminate="True" Height="3" />
+            </StackPanel>
+        </StackPanel>
+        <md:MarkdownScrollViewer x:Name="PromptMarkdown" Markdown="{Binding Markdown}"
+                                 MarkdownStyleName="FluentTheme" SelectionEnabled="True" Padding="14"
+                                 SaveScrollValueWhenContentUpdated="False">
+            <md:MarkdownScrollViewer.Styles>
+                <Style Selector="edit|TextEditor">
+                    <Setter Property="FontSize" Value="{DynamicResource ControlContentThemeFontSize}" />
+                </Style>
+            </md:MarkdownScrollViewer.Styles>
+        </md:MarkdownScrollViewer>
+    </DockPanel>
+</Window>

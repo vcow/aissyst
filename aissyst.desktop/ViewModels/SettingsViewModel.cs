@@ -5,6 +5,17 @@ namespace aissyst.desktop.ViewModels;
 
 internal sealed record AudioSourceChoice(AudioSourceType Value, string Label);
 
+internal sealed class HotkeyViewModel(string caption, string gesture) : ViewModel
+{
+	private string _gesture = gesture;
+	public string Caption { get; } = caption;
+	public string Gesture
+	{
+		get => _gesture;
+		set { _gesture = value; Notify(); }
+	}
+}
+
 internal sealed class SettingsViewModel : ViewModel
 {
 	private double _transcriptionConcurrency;
@@ -43,6 +54,8 @@ internal sealed class SettingsViewModel : ViewModel
 	public string ModelSha256 { get; set; } = string.Empty;
 	public string Language { get; set; } = string.Empty;
 	public bool UseMarkdown { get; set; }
+	public decimal? PromptFontSize { get; set; }
+	public IReadOnlyList<HotkeyViewModel> Hotkeys { get; private set; } = [];
 	public string Error { get; private set; } = string.Empty;
 	public bool HasError => Error.Length > 0;
 	public bool IsEditing { get; private set; } = true;
@@ -63,6 +76,9 @@ internal sealed class SettingsViewModel : ViewModel
 		ModelSha256 = settings.TranscriptionModelSha256;
 		Language = settings.TranscriptionLanguage;
 		UseMarkdown = settings.UseMarkdownFormat;
+		PromptFontSize = (decimal)settings.Prompt.FontSize;
+		var captions = new[] { "Force Dialog", "Translate", "Suggest", "Answer", "Translate & Answer", "Translate & Suggest" };
+		Hotkeys = captions.Select((caption, index) => new HotkeyViewModel(caption, settings.Prompt.Gestures[index])).ToArray();
 		SetError(string.Empty);
 		foreach (var property in GetType().GetProperties())
 		{
@@ -94,7 +110,7 @@ internal sealed class SettingsViewModel : ViewModel
 	public DesktopApplicationSettings GetSettings()
 	{
 		if (SelectedSource == null || SilenceSeconds == null || FragmentSeconds == null
-			|| SignalThreshold == null || QueueCapacity == null)
+			|| SignalThreshold == null || QueueCapacity == null || PromptFontSize == null)
 		{
 			throw new ArgumentException("Fill in all numeric fields and select the audio sources.");
 		}
@@ -123,7 +139,13 @@ internal sealed class SettingsViewModel : ViewModel
 			MaxTextProcessingCount = checked((int)TextConcurrency),
 			TranscriptionModelPath = ModelPath, TranscriptionModelUrl = url,
 			TranscriptionModelSha256 = ModelSha256?.Trim()!, TranscriptionLanguage = Language,
-			UseMarkdownFormat = UseMarkdown
+			UseMarkdownFormat = UseMarkdown,
+			Prompt = new PromptSettings
+			{
+				FontSize = (double)PromptFontSize.Value, ForceDialog = Hotkeys[0].Gesture,
+				Translate = Hotkeys[1].Gesture, Suggest = Hotkeys[2].Gesture, Answer = Hotkeys[3].Gesture,
+				TranslateAndAnswer = Hotkeys[4].Gesture, TranslateAndSuggest = Hotkeys[5].Gesture
+			}
 		}.Validated();
 	}
 }

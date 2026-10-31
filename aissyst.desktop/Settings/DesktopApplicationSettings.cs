@@ -16,9 +16,15 @@ internal sealed record DesktopApplicationSettings : IApplicationSettings
 	public int MaxTranscriptionProcessingCount { get; init; } = 1;
 	public int MaxTextProcessingCount { get; init; } = 1;
 	public bool UseMarkdownFormat { get; init; } = true;
+	public PromptSettings Prompt { get; init; } = new();
 
 	public DesktopApplicationSettings Validated()
 	{
+		if (Prompt == null)
+		{
+			throw new ArgumentException("Prompt settings are required.");
+		}
+		Prompt.Validated();
 		if (AvailableSources is not (AudioSourceType.Both or AudioSourceType.Microphone or AudioSourceType.Application))
 		{
 			throw new ArgumentException("Select at least one supported audio source.");

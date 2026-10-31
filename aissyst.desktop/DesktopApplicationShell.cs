@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using aissyst.desktop.Settings;
 using aissyst.desktop.Dialog;
@@ -20,6 +21,8 @@ internal sealed class DesktopApplicationShell
 	private readonly ILogger<DesktopApplicationShell> _logger;
 	private readonly DesktopDialogService? _dialog;
 	private readonly DesktopInterview? _interview;
+	private readonly InterviewCommands? _interviewCommands;
+	private readonly DesktopPromptService? _prompt;
 	private readonly IDisposable _openedMenus;
 	private readonly IDisposable _visibilityChanges;
 	private readonly IDisposable _windowStateChanges;
@@ -28,7 +31,6 @@ internal sealed class DesktopApplicationShell
 	private readonly List<(Window? Owner, Action Update)> _menuStates = [];
 	private readonly HashSet<Window> _menuWindows = [];
 	private readonly Action _quit;
-	private Task? _forceTask;
 	private Task? _reconnectTask;
 	private Task? _saveTask;
 	private Task? _settingsTask;
@@ -40,7 +42,8 @@ internal sealed class DesktopApplicationShell
 
 	public DesktopApplicationShell(Application application, MainWindow log, DesktopSettingsDialog settings,
 		Action quit, ILogger<DesktopApplicationShell> logger, DesktopDialogService? dialog = null,
-		DesktopWindowState? windowState = null, DesktopInterview? interview = null)
+		DesktopWindowState? windowState = null, DesktopInterview? interview = null,
+		InterviewCommands? interviewCommands = null, DesktopPromptService? prompt = null)
 	{
 		_application = application;
 		_log = log;
@@ -48,8 +51,15 @@ internal sealed class DesktopApplicationShell
 		_logger = logger;
 		_dialog = dialog;
 		_interview = interview;
+		_interviewCommands = interviewCommands;
+		_prompt = prompt;
 		_windowState = windowState;
 		_quit = quit;
+		if (interviewCommands != null)
+		{
+			interviewCommands.Changed += UpdateMenus;
+			interviewCommands.Executing += CommandExecuting;
+		}
 		// The macOS exporter captures this root before the shell is created.
 		var applicationMenu = CreateApplicationMenu(NativeMenu.GetMenu(application));
 		if (applicationMenu.Parent is { } applicationItem)
@@ -84,6 +94,7 @@ internal sealed class DesktopApplicationShell
 			_log.Show();
 		}
 		_dialog?.OpenAtStartup();
+		_prompt?.OpenAtStartup();
 		UpdateMenus();
 	}
 
@@ -91,10 +102,12 @@ internal sealed class DesktopApplicationShell
 	{
 		if (_menuWindows.Add(window))
 		{
+			window.AddHandler(InputElement.KeyDownEvent, HandleShortcut, RoutingStrategies.Bubble);
 			NativeMenu.SetMenu(window, CreateFullMenu(window, !OperatingSystem.IsMacOS(), NativeMenu.GetMenu(window)));
 			window.Closed += (_, _) =>
 			{
 				_menuWindows.Remove(window);
+				window.RemoveHandler(InputElement.KeyDownEvent, HandleShortcut);
 				_menuStates.RemoveAll(state => state.Owner == window);
 			};
 		}
@@ -136,11 +149,22 @@ internal sealed class DesktopApplicationShell
 	private NativeMenu CreateInterviewMenu(Window? owner)
 	{
 		var menu = new NativeMenu();
-		var force = Item("Force Dialog", ForceDialog);
-		menu.Items.Add(force);
-		foreach (var caption in new[] { "Translate", "Suggest", "Answer", "Translate & Answer", "Translate & Suggest" })
+		var commandItems = new List<(NativeMenuItem Item, InterviewCommand Command)>();
+		if (_interviewCommands != null)
 		{
-			menu.Items.Add(new NativeMenuItem(caption) { IsEnabled = false });
+			foreach (var command in _interviewCommands.Items)
+			{
+				var item = new NativeMenuItem(command.Caption) { Command = command, Gesture = command.Gesture };
+				menu.Items.Add(item);
+				commandItems.Add((item, command));
+			}
+		}
+		else
+		{
+			foreach (var caption in new[] { "Force Dialog", "Translate", "Suggest", "Answer", "Translate & Answer", "Translate & Suggest" })
+			{
+				menu.Items.Add(new NativeMenuItem(caption) { IsEnabled = false });
+			}
 		}
 		menu.Items.Add(new NativeMenuItemSeparator());
 		var reconnect = Item("Reconnect…", Reconnect);
@@ -149,7 +173,11 @@ internal sealed class DesktopApplicationShell
 		menu.Items.Add(save);
 		Register(menu, owner, () =>
 		{
-			force.IsEnabled = CanUseWindows && _interview?.IsStarted == true && _forceTask is not { IsCompleted: false };
+			foreach (var (item, command) in commandItems)
+			{
+				item.Gesture = command.Gesture;
+				item.IsEnabled = CanUseWindows && command.CanExecute(null);
+			}
 			reconnect.IsEnabled = CanUseWindows && _interview?.IsInitialized == true && _reconnectTask is not { IsCompleted: false };
 			save.IsEnabled = CanUseWindows && _dialog != null && _saveTask is not { IsCompleted: false };
 		});
@@ -178,7 +206,17 @@ internal sealed class DesktopApplicationShell
 		log.ToggleType = dialog.ToggleType = MenuItemToggleType.CheckBox;
 		menu.Items.Add(log);
 		menu.Items.Add(dialog);
-		menu.Items.Add(new NativeMenuItem("Prompt") { ToggleType = MenuItemToggleType.CheckBox, IsEnabled = false });
+		var prompt = Item("Prompt", () =>
+		{
+			if (CanUseWindows && _prompt != null)
+			{
+				if (IsShown(_prompt.Window)) { _prompt.Window!.Hide(); }
+				else { _prompt.Show(); }
+				UpdateMenus();
+			}
+		});
+		prompt.ToggleType = MenuItemToggleType.CheckBox;
+		menu.Items.Add(prompt);
 		menu.Items.Add(new NativeMenuItemSeparator());
 		var fit = Item("Fit to Screen", () =>
 		{
@@ -192,6 +230,8 @@ internal sealed class DesktopApplicationShell
 		{
 			log.IsChecked = IsShown(_log);
 			dialog.IsChecked = IsShown(_dialog?.Window);
+			prompt.IsChecked = IsShown(_prompt?.Window);
+			prompt.IsEnabled = CanUseWindows && _prompt != null;
 			log.IsEnabled = CanUseWindows;
 			dialog.IsEnabled = CanUseWindows && _dialog != null;
 			fit.IsEnabled = CanUseWindows && _windowState != null;
@@ -214,12 +254,35 @@ internal sealed class DesktopApplicationShell
 	}
 	private void UpdateMenus()
 	{
+		_interviewCommands?.SetBlocked(!CanUseWindows);
 		foreach (var state in _menuStates.ToArray())
 		{
 			state.Update();
 		}
 	}
 	private void InterviewStateChanged() => Dispatcher.UIThread.Post(UpdateMenus);
+
+	private void CommandExecuting(InterviewCommand command)
+	{
+		if (command.Request == null) { _dialog?.Show(activate: false); }
+	}
+
+	private void HandleShortcut(object? sender, KeyEventArgs args)
+	{
+		if (args.Handled || !CanUseWindows || sender is not Window { IsActive: true, IsEnabled: true } window
+			|| _interviewCommands == null)
+		{
+			return;
+		}
+		// Cocoa consumes native menu accelerators before routing keyboard events to the window.
+		if (OperatingSystem.IsMacOS() && NativeMenu.GetIsNativeMenuExported(window)) { return; }
+		var command = _interviewCommands.Items.FirstOrDefault(item => item.Gesture?.Matches(args) == true);
+		if (command?.CanExecute(null) == true)
+		{
+			args.Handled = true;
+			command.Execute(null);
+		}
+	}
 
 	public void ShowLog()
 	{
@@ -243,17 +306,6 @@ internal sealed class DesktopApplicationShell
 			_dialog?.Show();
 			UpdateMenus();
 		}
-	}
-
-	private void ForceDialog()
-	{
-		if (!CanUseWindows || _interview?.IsStarted != true || _forceTask is { IsCompleted: false })
-		{
-			return;
-		}
-		ShowDialog();
-		_forceTask = RunCommandAsync(() => _interview.ForceDialogAsync(_commands.Token), "Failed to show the current transcription.");
-		UpdateMenus();
 	}
 
 	private void Reconnect()
@@ -358,11 +410,12 @@ internal sealed class DesktopApplicationShell
 		_shuttingDown = true;
 		_windowState?.StopTracking();
 		_commands.Cancel();
+		_interviewCommands?.Stop();
 		Confirmation?.Close(false);
 		_settings.Close();
 		UpdateMenus();
 	}
-	public Task WaitForCommandsAsync() => Task.WhenAll(new[] { _forceTask, _reconnectTask, _settingsTask }
+	public Task WaitForCommandsAsync() => Task.WhenAll(new[] { _reconnectTask, _settingsTask, _interviewCommands?.WaitForIdleAsync() }
 		.Where(task => task != null).Cast<Task>());
 	public void AllowClose()
 	{
@@ -370,6 +423,15 @@ internal sealed class DesktopApplicationShell
 		_openedMenus.Dispose();
 		_visibilityChanges.Dispose();
 		_windowStateChanges.Dispose();
+		foreach (var window in _menuWindows)
+		{
+			window.RemoveHandler(InputElement.KeyDownEvent, HandleShortcut);
+		}
+		if (_interviewCommands != null)
+		{
+			_interviewCommands.Changed -= UpdateMenus;
+			_interviewCommands.Executing -= CommandExecuting;
+		}
 		if (_interview != null)
 		{
 			_interview.StateChanged -= InterviewStateChanged;

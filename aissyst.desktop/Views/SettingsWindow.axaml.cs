@@ -60,7 +60,7 @@ public partial class SettingsWindow : Window
 		{
 			var store = _store ?? throw new InvalidOperationException("The settings store is unavailable.");
 			await store.SaveAsync(_model.GetSettings());
-			_logger.LogInformation("Settings saved. Restart the application to apply them.");
+			_logger.LogInformation("Settings saved. Prompt font size and shortcuts applied; other changes require a restart.");
 			_saving = false;
 			Close();
 		}

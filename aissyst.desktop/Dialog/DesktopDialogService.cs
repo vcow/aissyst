@@ -56,7 +56,7 @@ internal sealed class DesktopDialogService(DialogViewModel model, ILogger<Deskto
 		}
 	}
 
-	public void Show()
+	public void Show(bool activate = true)
 	{
 		if (_closing)
 		{
@@ -68,7 +68,7 @@ internal sealed class DesktopDialogService(DialogViewModel model, ILogger<Deskto
 		{
 			Window.WindowState = WindowState.Normal;
 		}
-		Window.Activate();
+		if (activate) { Window.Activate(); }
 	}
 
 	public Task SaveAsync()

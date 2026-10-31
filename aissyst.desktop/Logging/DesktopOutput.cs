@@ -11,12 +11,14 @@ internal sealed class DesktopOutput : IOutput, IDisposable
 	private readonly DialogCoordinator _dialog;
 	private readonly DialogViewModel _view;
 	private readonly ILogger<DesktopOutput> _logger;
+	private readonly PromptViewModel? _prompt;
 
-	public DesktopOutput(DialogCoordinator dialog, DialogViewModel view, ILogger<DesktopOutput> logger)
+	public DesktopOutput(DialogCoordinator dialog, DialogViewModel view, ILogger<DesktopOutput> logger, PromptViewModel? prompt = null)
 	{
 		_dialog = dialog;
 		_view = view;
 		_logger = logger;
+		_prompt = prompt;
 		dialog.DialogUpdated += view.ReplaceHistory;
 	}
 
@@ -37,7 +39,8 @@ internal sealed class DesktopOutput : IOutput, IDisposable
 	{
 		lock (_sync)
 		{
-			_logger.LogInformation("{Answer}", text);
+			if (_prompt != null) { _prompt.ShowAnswer(text); }
+			else { _logger.LogInformation("{Answer}", text); }
 		}
 	}
 

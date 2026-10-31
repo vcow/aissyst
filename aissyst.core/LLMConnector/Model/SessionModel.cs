@@ -57,6 +57,8 @@ public sealed class SessionModel : IAsyncDisposable
 		}
 	}
 
+	public event Action? ReadinessChanged;
+
 	public Task InitializeAsync(CancellationToken cancellationToken = default)
 	{
 		lock (_sync)
@@ -136,6 +138,7 @@ public sealed class SessionModel : IAsyncDisposable
 				_isReady = true;
 				accepted = true;
 			}
+			ReadinessChanged?.Invoke();
 		}
 		finally
 		{
@@ -279,10 +282,13 @@ public sealed class SessionModel : IAsyncDisposable
 			if (_recovery is { IsCompleted: false })
 			{
 				_recoveryRequested = true;
-				return;
 			}
-			_recovery = Task.Run(() => RecoverAsync());
+			else
+			{
+				_recovery = Task.Run(() => RecoverAsync());
+			}
 		}
+		ReadinessChanged?.Invoke();
 	}
 
 	public async Task ReconnectAsync(CancellationToken cancellationToken = default)
@@ -303,6 +309,7 @@ public sealed class SessionModel : IAsyncDisposable
 			}
 			recovery = _recovery;
 		}
+		ReadinessChanged?.Invoke();
 		await recovery.WaitAsync(cancellationToken);
 		if (!IsReady)
 		{
@@ -396,6 +403,7 @@ public sealed class SessionModel : IAsyncDisposable
 	private async Task DisposeCoreAsync()
 	{
 		_isReady = false;
+		ReadinessChanged?.Invoke();
 		_connector.ConnectionLost -= OnConnectionLost;
 		await _shutdown.CancelAsync();
 		if (_initialization != null)
