@@ -7,8 +7,22 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 	public event Action<DialogMessage>? MessageCompleted;
 	public event Action<IReadOnlyList<DialogMessage>>? HistoryReplaced;
 	public event Action<IReadOnlyList<DialogMessage>>? HistoryRequested;
+	public event Action<IReadOnlyList<DialogMessage>>? DialogUpdated;
 
-	public Task InitializeAsync(CancellationToken cancellationToken = default) => processor.InitializeAsync(cancellationToken);
+	public async Task InitializeAsync(CancellationToken cancellationToken = default)
+	{
+		await _gate.WaitAsync(cancellationToken);
+		try
+		{
+			await processor.InitializeAsync(cancellationToken);
+			NotifyDialogUpdated();
+		}
+		finally
+		{
+			_gate.Release();
+		}
+	}
+
 	public IReadOnlyList<DialogMessage> GetDialog(DateTime fromTime) => processor.GetDialog(fromTime);
 
 	public async Task ProcessAsync(DialogMessage message, CancellationToken cancellationToken = default)
@@ -21,6 +35,7 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 			{
 				MessageCompleted?.Invoke(completed);
 			}
+			NotifyDialogUpdated();
 		}
 		finally
 		{
@@ -39,6 +54,7 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 			}
 			cancellationToken.ThrowIfCancellationRequested();
 			HistoryReplaced?.Invoke(processor.GetDialog(DateTime.MinValue));
+			NotifyDialogUpdated();
 		}
 		finally
 		{
@@ -59,4 +75,6 @@ public sealed class DialogCoordinator(ITextProcessor processor)
 			_gate.Release();
 		}
 	}
+
+	private void NotifyDialogUpdated() => DialogUpdated?.Invoke(processor.GetDialog(DateTime.MinValue));
 }

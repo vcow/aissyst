@@ -6,6 +6,7 @@ using Avalonia.Threading;
 using aissyst.core.Controller;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Settings;
+using aissyst.desktop.Dialog;
 using aissyst.desktop.Views;
 using aissyst.desktop.Wizard;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,7 +38,8 @@ public partial class App : Application
 			_settingsDialog = new DesktopSettingsDialog(settings, () => main, () => desktop.Windows,
 				_services.GetRequiredService<ILogger<SettingsWindow>>());
 			_shell = new DesktopApplicationShell(this, main, _settingsDialog, () => BeginShutdown(desktop),
-				_services.GetRequiredService<ILogger<DesktopApplicationShell>>());
+				_services.GetRequiredService<ILogger<DesktopApplicationShell>>(),
+				_services.GetRequiredService<DesktopDialogService>());
 			if (settings.LoadError != null)
 			{
 				_services.GetRequiredService<ILogger<App>>().LogWarning(settings.LoadError,
@@ -86,6 +88,7 @@ public partial class App : Application
 			cancellation.Token.ThrowIfCancellationRequested();
 			logger.LogInformation("Setup completed. The LLM session is ready. Audio sources are configured; capture has not started.");
 			await wizard.CompleteAsync();
+			_shell?.ShowDialog();
 		}
 		catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 		{

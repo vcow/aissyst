@@ -9,6 +9,7 @@ using aissyst.core.Output;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using aissyst.desktop.Logging;
+using aissyst.desktop.Dialog;
 using aissyst.desktop.Selectors;
 using aissyst.desktop.Settings;
 using aissyst.desktop.ViewModels;
@@ -47,6 +48,8 @@ internal static class DesktopServices
 		services.AddSingleton<ITranscriber, WhisperTranscriber>();
 		services.AddSingleton<ITextProcessor, TextProcessor>();
 		services.AddSingleton<DialogCoordinator>();
+		services.AddSingleton<DialogViewModel>();
+		services.AddSingleton<DesktopDialogService>();
 		services.AddSingleton(new SessionRecoveryOptions());
 		services.AddSingleton<IOutput, DesktopOutput>();
 		services.AddSingleton(new ChatGPTConnectorOptions());

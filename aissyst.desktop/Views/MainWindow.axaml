@@ -17,6 +17,10 @@
                 <Separator />
                 <MenuItem x:Name="QuitMenuItem" Header="Quit" Click="QuitApplication" />
             </MenuItem>
+            <MenuItem Header="Interview">
+                <MenuItem x:Name="ShowDialogMenuItem" Header="Show Dialog" Click="ShowDialog" />
+                <MenuItem x:Name="SaveDialogMenuItem" Header="Save Dialog…" Click="SaveDialog" />
+            </MenuItem>
         </Menu>
     <Grid Margin="12" RowDefinitions="Auto,*" RowSpacing="8">
         <WrapPanel Orientation="Horizontal">
