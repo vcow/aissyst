@@ -12,10 +12,6 @@ namespace aissyst.desktop.Views;
 
 public partial class MainWindow : Window
 {
-	internal event Action? SettingsRequested;
-	internal event Action? QuitRequested;
-	internal event Action? ShowDialogRequested;
-	internal event Action? SaveDialogRequested;
 	private readonly ListBox _list;
 	private readonly Button _latest;
 	private LogViewModel? _log;
@@ -140,11 +136,6 @@ public partial class MainWindow : Window
 	}
 
 	private void ClearLog(object? sender, RoutedEventArgs e) => _log?.Clear();
-	private void OpenSettings(object? sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
-	private void QuitApplication(object? sender, RoutedEventArgs e) => QuitRequested?.Invoke();
-	private void ShowLog(object? sender, RoutedEventArgs e) => Activate();
-	private void ShowDialog(object? sender, RoutedEventArgs e) => ShowDialogRequested?.Invoke();
-	private void SaveDialog(object? sender, RoutedEventArgs e) => SaveDialogRequested?.Invoke();
 
 	private async void CopyLog(object? sender, RoutedEventArgs e)
 	{

@@ -182,6 +182,56 @@ public sealed class SessionModelTests
 	}
 
 	[Fact]
+	public async Task ManualReconnectCancelsAnActiveRequestAndRestoresTheCurrentDialog()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		await fixture.Dialog.ProcessAsync(new DialogMessage(DateTime.UtcNow, AudioSourceType.Application, "Current question"));
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Send = async (_, token) =>
+		{
+			entered.TrySetResult();
+			await Task.Delay(Timeout.InfiniteTimeSpan, token);
+			return new DialogResponse();
+		};
+		var request = fixture.Model.SendRequestAsync(RequestType.Reply);
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		await fixture.Model.ReconnectAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+		Assert.True(fixture.Model.IsReady);
+		Assert.Equal(1, fixture.Connector.Reconnects);
+		Assert.Equal(2, fixture.Connector.SessionInitializations);
+		Assert.Equal("Current question", Assert.Single(fixture.Model.GetSession().Dialog).Message);
+	}
+
+	[Fact]
+	public async Task ManualReconnectCoalescesConcurrentCallsAndReportsFailureThenAllowsRetry()
+	{
+		await using var fixture = new Fixture();
+		await fixture.InitializeAsync();
+		var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		fixture.Connector.Initialize = async (_, token) =>
+		{
+			entered.TrySetResult();
+			await release.Task.WaitAsync(token);
+			throw new InvalidDataException("Invalid initialization response.");
+		};
+		var first = fixture.Model.ReconnectAsync();
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		var second = fixture.Model.ReconnectAsync();
+		Assert.False(fixture.Model.IsReady);
+		release.TrySetResult();
+		await Assert.ThrowsAsync<InvalidDataException>(() => first);
+		await Assert.ThrowsAsync<InvalidDataException>(() => second);
+		Assert.Equal(1, fixture.Connector.Reconnects);
+		fixture.Connector.Initialize = (_, _) => Task.FromResult(new DialogResponse());
+		await fixture.Model.ReconnectAsync().WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(fixture.Model.IsReady);
+		Assert.Equal(2, fixture.Connector.Reconnects);
+	}
+
+	[Fact]
 	public async Task DisposalCancelsRequestAndIsIdempotent()
 	{
 		await using var fixture = new Fixture();

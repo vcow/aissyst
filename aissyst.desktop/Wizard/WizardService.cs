@@ -3,11 +3,13 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Views;
+using aissyst.desktop.State;
 using Microsoft.Extensions.Logging;
 
 namespace aissyst.desktop.Wizard;
 
-internal sealed class WizardService(Func<Window> owner, ILogger<WizardService> logger) : IWizardService, IAsyncDisposable
+internal sealed class WizardService(ILogger<WizardService> logger,
+	DesktopWindowState? windowState = null) : IWizardService, IAsyncDisposable
 {
 	private readonly SemaphoreSlim _gate = new(1, 1);
 	private readonly CancellationTokenSource _cancel = new();
@@ -49,7 +51,8 @@ internal sealed class WizardService(Func<Window> owner, ILogger<WizardService> l
 							_cancel.Cancel();
 						}
 					};
-					DesktopWindowPlacement.Show(owner(), _window);
+					windowState?.Attach(_window, "wizard", rememberVisibility: false);
+					_window.Show();
 				}
 				_pending = completion;
 				InvalidateProgress();

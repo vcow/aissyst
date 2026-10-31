@@ -281,15 +281,44 @@ public sealed class SessionModel : IAsyncDisposable
 				_recoveryRequested = true;
 				return;
 			}
-			_recovery = Task.Run(RecoverAsync);
+			_recovery = Task.Run(() => RecoverAsync());
 		}
 	}
 
-	private async Task RecoverAsync()
+	public async Task ReconnectAsync(CancellationToken cancellationToken = default)
+	{
+		Task recovery;
+		lock (_sync)
+		{
+			ObjectDisposedException.ThrowIf(_disposal != null, this);
+			cancellationToken.ThrowIfCancellationRequested();
+			if (_state == null)
+			{
+				throw new InvalidOperationException("Initialize the session before reconnecting.");
+			}
+			if (_recovery is not { IsCompleted: false })
+			{
+				_isReady = false;
+				_recovery = Task.Run(() => RecoverAsync(force: true));
+			}
+			recovery = _recovery;
+		}
+		await recovery.WaitAsync(cancellationToken);
+		if (!IsReady)
+		{
+			throw new IOException("The LLM session could not be restored.");
+		}
+	}
+
+	private async Task RecoverAsync(bool force = false)
 	{
 		var restored = false;
 		try
 		{
+			if (force)
+			{
+				await _connector.CancelAsync(_shutdown.Token);
+			}
 			for (var attempt = 1; ; attempt++)
 			{
 				try
@@ -328,7 +357,11 @@ public sealed class SessionModel : IAsyncDisposable
 		}
 		catch (Exception exception)
 		{
-			_logger.LogError(exception, "LLM recovery failed. Restart the application to reconnect.");
+			_logger.LogError(exception, "LLM recovery failed. Retry reconnecting or restart the application.");
+			if (force)
+			{
+				throw;
+			}
 		}
 		finally
 		{
@@ -337,7 +370,7 @@ public sealed class SessionModel : IAsyncDisposable
 				if (restored && _recoveryRequested && _disposal == null && !_shutdown.IsCancellationRequested)
 				{
 					_recoveryRequested = false;
-					_recovery = Task.Run(RecoverAsync);
+					_recovery = Task.Run(() => RecoverAsync());
 				}
 			}
 		}
@@ -372,7 +405,8 @@ public sealed class SessionModel : IAsyncDisposable
 		}
 		if (_recovery != null)
 		{
-			await _recovery;
+			try { await _recovery; }
+			catch (Exception) { /* Recovery already logs failures. */ }
 		}
 		Task? request;
 		lock (_sync)

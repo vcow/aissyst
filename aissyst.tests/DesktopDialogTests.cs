@@ -62,7 +62,7 @@ public sealed class DesktopDialogTests : IDisposable
 		Assert.Equal(3, model.Entries.Count);
 		Assert.Equal("My first answer.", model.Entries[1].Text);
 		Assert.Equal(Brushes.White, model.Entries[0].Foreground);
-		Assert.Equal(Brushes.LightGray, model.Entries[1].Foreground);
+		Assert.Equal(Brushes.LightBlue, model.Entries[1].Foreground);
 		Assert.True(model.Entries[1].Spacing.Left > model.Entries[0].Spacing.Left);
 		Assert.Contains("Interviewer", model.Entries[0].Header);
 		Assert.Contains("Interviewee", model.Entries[1].Header);
@@ -146,21 +146,22 @@ public sealed class DesktopDialogTests : IDisposable
 			main.Show();
 			wizard.Show();
 			var root = NativeMenu.GetMenu(wizard)!;
-			var interview = Assert.IsType<NativeMenuItem>(Assert.Single(root.Items));
+			var interview = root.Items.OfType<NativeMenuItem>().Single(item => item.Header == "Interview");
+			var windows = root.Items.OfType<NativeMenuItem>().Single(item => item.Header == "Windows").Menu!;
 			Assert.Equal("Interview", interview.Header);
-			((INativeMenuItemExporterEventsImplBridge)interview.Menu!.Items[0]).RaiseClicked();
+			((INativeMenuItemExporterEventsImplBridge)windows.Items[1]).RaiseClicked();
 			var window = dialog.Window!;
 			Assert.True(window.IsVisible);
 			Assert.Empty(main.OwnedWindows);
 			Assert.Empty(wizard.OwnedWindows);
-			var dialogMenu = Assert.IsType<NativeMenuItem>(NativeMenu.GetMenu(window)!.Items[0]).Menu!;
-			Assert.Equal("Save Dialog…", Assert.IsType<NativeMenuItem>(dialogMenu.Items[1]).Header);
-			((INativeMenuItemExporterEventsImplBridge)dialogMenu.Items[1]).RaiseClicked();
+			var dialogMenu = NativeMenu.GetMenu(window)!.Items.OfType<NativeMenuItem>().Single(item => item.Header == "Interview").Menu!;
+			Assert.Equal("Save Dialog…", Assert.IsType<NativeMenuItem>(dialogMenu.Items[8]).Header);
+			((INativeMenuItemExporterEventsImplBridge)dialogMenu.Items[8]).RaiseClicked();
 			Assert.Equal(1, pickerCalls);
 			Assert.Same(window, dialog.Window);
 			window.Close();
 			Assert.False(window.IsVisible);
-			((INativeMenuItemExporterEventsImplBridge)interview.Menu.Items[0]).RaiseClicked();
+			((INativeMenuItemExporterEventsImplBridge)windows.Items[1]).RaiseClicked();
 			Assert.Same(window, dialog.Window);
 			Assert.True(window.IsVisible);
 		}

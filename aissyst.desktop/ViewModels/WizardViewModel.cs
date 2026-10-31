@@ -47,15 +47,17 @@ internal sealed class WizardViewModel : ViewModel
 	public double ProgressValue { get; private set; }
 	public bool IsIndeterminate { get; private set; } = true;
 	public bool IsTemplatePath { get; private set; }
-	public bool IsChoicePage => !IsTemplatePath;
+	public bool IsAction { get; private set; }
+	private string _actionLabel = "Next";
+	public bool IsChoicePage => !IsTemplatePath && !IsAction;
 	public bool IsConfirming { get; private set; }
 	public bool CanEdit => !IsWaiting && !IsConfirming;
-	public string NextLabel => IsConfirming ? "Cancel" : _selected?.NextLabel ?? "Next";
+	public string NextLabel => IsAction ? _actionLabel : IsConfirming ? "Cancel" : _selected?.NextLabel ?? "Next";
 	public bool HasSecondaryAction => _selected?.SecondaryAction != null;
 	public string SecondaryLabel => (IsConfirming ? _selected?.SecondaryAction?.ConfirmationLabel
 		: _selected?.SecondaryAction?.Label) ?? string.Empty;
 	public string Confirmation => _selected?.SecondaryAction?.Confirmation ?? string.Empty;
-	public bool CanNext => !IsWaiting && !IsBrowsing && (IsTemplatePath ? !string.IsNullOrWhiteSpace(Path) : _selected != null);
+	public bool CanNext => !IsWaiting && !IsBrowsing && (IsAction || (IsTemplatePath ? !string.IsNullOrWhiteSpace(Path) : _selected != null));
 	public IReadOnlyList<WizardOptionViewModel> Options { get; private set; } = [];
 	public string Path
 	{
@@ -84,6 +86,8 @@ internal sealed class WizardViewModel : ViewModel
 		Description = page.Description;
 		Error = page.Error;
 		IsTemplatePath = page.IsTemplatePath;
+		IsAction = page.IsAction;
+		_actionLabel = page.ActionLabel;
 		IsConfirming = false;
 		IsFailed = false;
 		ResetProgress();
@@ -143,7 +147,7 @@ internal sealed class WizardViewModel : ViewModel
 				NotifyActions();
 				return false;
 			}
-			value = IsTemplatePath ? Path.Trim() : _selected!.Key;
+			value = IsAction ? string.Empty : IsTemplatePath ? Path.Trim() : _selected!.Key;
 		}
 		Wait();
 		return true;
@@ -214,7 +218,7 @@ internal sealed class WizardViewModel : ViewModel
 	private void NotifyAll()
 	{
 		foreach (var property in new[] { nameof(Title), nameof(Description), nameof(Error), nameof(HasError),
-			nameof(IsTemplatePath), nameof(IsChoicePage), nameof(Options), nameof(IsWaiting), nameof(CanNext),
+			nameof(IsTemplatePath), nameof(IsAction), nameof(IsChoicePage), nameof(Options), nameof(IsWaiting), nameof(CanNext),
 			nameof(IsWorking), nameof(IsFailed) })
 		{
 			Notify(property);

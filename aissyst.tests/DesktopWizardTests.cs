@@ -34,7 +34,7 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var owner = new Window();
 		owner.Show();
-		await using var wizard = new WizardService(() => owner, NullLogger<WizardService>.Instance);
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		Assert.Empty(owner.OwnedWindows);
 		var first = wizard.ShowAsync(new WizardPage("First", "Choose an item.", [new("one", "One"), new("two", "Two")]));
 		await Until(() => wizard.Window is { IsVisible: true });
@@ -69,7 +69,7 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var owner = new Window();
 		owner.Show();
-		await using var wizard = new WizardService(() => owner, NullLogger<WizardService>.Instance);
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		var page = new WizardPage("Select a session", "Select a saved session or create a new one.",
 		[
 			new("session", "Saved session")
@@ -129,7 +129,7 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var owner = new Window();
 		owner.Show();
-		await using var wizard = new WizardService(() => owner, NullLogger<WizardService>.Instance);
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		var request = wizard.ShowAsync(new WizardPage("Applications", "Choose an application.",
 			Enumerable.Range(0, 300).Select(index => new WizardOption(index.ToString(), $"Application {index}")).ToArray()));
 		await Until(() => wizard.Window is { IsVisible: true });
@@ -151,7 +151,7 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var owner = new Window();
 		owner.Show();
-		await using var wizard = new WizardService(() => owner, NullLogger<WizardService>.Instance);
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		using var cancellation = new CancellationTokenSource();
 		var request = Task.Run(() => wizard.ShowAsync(new WizardPage("Choice", "Choose.", [new("one", "One")]), cancellation.Token));
 		await Until(() => wizard.Window is { IsVisible: true });
@@ -171,7 +171,9 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var log = new Window { Width = 800, Height = 450, MinWidth = 320, MinHeight = 200 };
 		log.Show();
-		await using var wizard = new WizardService(() => log, NullLogger<WizardService>.Instance);
+		var originalLogPosition = log.Position;
+		var originalLogWidth = log.Width;
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		var request = wizard.ShowAsync(new WizardPage("Setup", "Choose an option.", [new("one", "One")]));
 		await Until(() => wizard.Window is { IsVisible: true });
 		var window = wizard.Window!;
@@ -192,11 +194,8 @@ public sealed class DesktopWizardTests : IDisposable
 		Assert.True(titleBar.IsHitTestVisible);
 		Assert.Equal("aissyst - Setup", window.FindControl<TextBlock>("WizardTitle")!.Text);
 		Assert.False(window.CanMinimize);
-		var screen = log.Screens.ScreenFromWindow(log);
-		if (screen != null)
-		{
-			Assert.True(log.Position.X + log.Width * log.RenderScaling <= window.Position.X);
-		}
+		Assert.Equal(originalLogPosition, log.Position);
+		Assert.Equal(originalLogWidth, log.Width);
 		log.Activate();
 		window.Close();
 		Assert.True(window.IsVisible);
@@ -226,7 +225,7 @@ public sealed class DesktopWizardTests : IDisposable
 	{
 		var log = new Window();
 		log.Show();
-		await using var wizard = new WizardService(() => log, NullLogger<WizardService>.Instance);
+		await using var wizard = new WizardService(NullLogger<WizardService>.Instance);
 		var reporter = new DesktopStartupProgress(wizard);
 		var first = wizard.ShowAsync(new WizardPage("First", "Choose.", [new("one", "One")]) { SelectedKey = "one" });
 		await Until(() => wizard.Window is { IsVisible: true });

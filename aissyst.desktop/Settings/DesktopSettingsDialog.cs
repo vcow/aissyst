@@ -1,11 +1,12 @@
 using Avalonia.Controls;
 using aissyst.desktop.Views;
+using aissyst.desktop.State;
 using Microsoft.Extensions.Logging;
 
 namespace aissyst.desktop.Settings;
 
 internal sealed class DesktopSettingsDialog(DesktopSettingsStore store, Func<Window> owner,
-	Func<IEnumerable<Window>> windows, ILogger<SettingsWindow> logger)
+	Func<IEnumerable<Window>> windows, ILogger<SettingsWindow> logger, DesktopWindowState? windowState = null)
 {
 	internal SettingsWindow? Window { get; private set; }
 	private Task? _pending;
@@ -29,6 +30,7 @@ internal sealed class DesktopSettingsDialog(DesktopSettingsStore store, Func<Win
 		}
 		var disabled = new HashSet<Window>();
 		Window = new SettingsWindow(store, logger);
+		windowState?.Attach(Window, "settings", rememberVisibility: false);
 		void Disable(Window window)
 		{
 			if (window != Window && window.IsEnabled)

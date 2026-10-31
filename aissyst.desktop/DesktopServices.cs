@@ -9,9 +9,11 @@ using aissyst.core.Output;
 using aissyst.core.Processor;
 using aissyst.core.Transcription;
 using aissyst.desktop.Logging;
+using aissyst.desktop.Interview;
 using aissyst.desktop.Dialog;
 using aissyst.desktop.Selectors;
 using aissyst.desktop.Settings;
+using aissyst.desktop.State;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Wizard;
 using aissyst.sqlite;
@@ -23,13 +25,16 @@ namespace aissyst.desktop;
 
 internal static class DesktopServices
 {
-	public static ServiceCollection Create(Window owner, LogViewModel log, DesktopSettingsStore? settings = null)
+	public static ServiceCollection Create(Window owner, LogViewModel log, DesktopSettingsStore? settings = null,
+		DesktopWindowState? windowState = null)
 	{
 		var services = new ServiceCollection();
 		services.AddLogging(builder => builder.SetMinimumLevel(LogLevel.Information)
 			.AddProvider(new WindowLoggerProvider(log.Append)));
-		services.AddSingleton<IWizardService>(provider => new WizardService(() => owner,
-			provider.GetRequiredService<ILogger<WizardService>>()));
+		var interfaceState = windowState ?? new DesktopWindowState();
+		services.AddSingleton(_ => interfaceState);
+		services.AddSingleton<IWizardService>(provider => new WizardService(
+			provider.GetRequiredService<ILogger<WizardService>>(), provider.GetRequiredService<DesktopWindowState>()));
 		services.AddSingleton<IProgress<InitializationProgress>>(provider =>
 			new DesktopStartupProgress((WizardService)provider.GetRequiredService<IWizardService>()));
 		settings ??= new DesktopSettingsStore();
@@ -43,7 +48,8 @@ internal static class DesktopServices
 		services.AddSingleton<IDatabase>(_ => new SqliteDatabase(path));
 		services.AddSingleton<ISessionSelector, DesktopSessionSelector>();
 		services.AddSingleton<IModelSelector, DesktopModelSelector>();
-		services.AddSingleton<ICaptureSession, DesktopCaptureSession>();
+		services.AddSingleton<DesktopCaptureSession>();
+		services.AddSingleton<ICaptureSession>(provider => provider.GetRequiredService<DesktopCaptureSession>());
 		services.AddSingleton(_ => new HttpClient { Timeout = TimeSpan.FromMinutes(30) });
 		services.AddSingleton<ITranscriber, WhisperTranscriber>();
 		services.AddSingleton<ITextProcessor, TextProcessor>();
@@ -57,6 +63,7 @@ internal static class DesktopServices
 		services.AddSingleton<ILLMConnector, ChatGPTConnector>();
 		services.AddSingleton<SessionModel>();
 		services.AddSingleton<ApplicationController>();
+		services.AddSingleton<DesktopInterview>();
 		return services;
 	}
 }

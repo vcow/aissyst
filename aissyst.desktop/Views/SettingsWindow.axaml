@@ -4,7 +4,7 @@
         x:Class="aissyst.desktop.Views.SettingsWindow"
         x:DataType="vm:SettingsViewModel"
         Title="aissyst - Settings" Width="680" Height="610" MinWidth="520" MinHeight="440"
-        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" Topmost="True">
     <Window.Styles>
         <Style Selector="TextBlock.description">
             <Setter Property="Opacity" Value="0.75" />
@@ -14,6 +14,8 @@
             <Setter Property="HorizontalAlignment" Value="Stretch" />
         </Style>
     </Window.Styles>
+    <DockPanel>
+        <NativeMenuBar DockPanel.Dock="Top" />
     <Grid Margin="20" RowDefinitions="Auto,*,Auto,Auto" RowSpacing="12">
         <TextBlock Text="Changes are saved for the next application launch. Restart aissyst to apply them."
                    Classes="description" />
@@ -105,4 +107,5 @@
             <Button x:Name="SaveSettingsButton" Grid.Column="2" Content="Save" Click="SaveSettings" />
         </Grid>
     </Grid>
+    </DockPanel>
 </Window>

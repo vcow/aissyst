@@ -4,8 +4,10 @@
         x:Class="aissyst.desktop.Views.DialogWindow"
         x:DataType="vm:DialogViewModel"
         Title="aissyst - Dialog" Width="560" Height="560" MinWidth="280" MinHeight="180"
-        WindowStartupLocation="CenterScreen" Background="#1E1E1E">
-    <ListBox x:Name="DialogList" ItemsSource="{Binding Entries}" Background="#1E1E1E"
+        WindowStartupLocation="CenterScreen" Background="#101E3A" Topmost="True">
+    <DockPanel>
+        <NativeMenuBar DockPanel.Dock="Top" />
+    <ListBox x:Name="DialogList" ItemsSource="{Binding Entries}" Background="#101E3A"
              BorderThickness="0" AutoScrollToSelectedItem="False"
              ScrollViewer.BringIntoViewOnFocusChange="False"
              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -31,4 +33,5 @@
             </DataTemplate>
         </ListBox.ItemTemplate>
     </ListBox>
+    </DockPanel>
 </Window>

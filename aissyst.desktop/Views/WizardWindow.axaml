@@ -5,7 +5,10 @@
         x:DataType="vm:WizardViewModel"
         Title="aissyst - Setup"
         Width="620" Height="520" MinWidth="620" MaxWidth="620" MinHeight="520" MaxHeight="520"
-        WindowDecorations="BorderOnly" CanResize="False" CanMinimize="False" CanMaximize="False">
+        WindowDecorations="BorderOnly" CanResize="False" CanMinimize="False" CanMaximize="False"
+        WindowStartupLocation="CenterScreen" Topmost="True">
+    <DockPanel>
+        <NativeMenuBar DockPanel.Dock="Top" />
     <Grid RowDefinitions="Auto,*">
         <Border x:Name="WizardTitleBar" Height="36" Padding="16,0" Background="#20808080"
                 PointerPressed="TitlePointerPressed">
@@ -61,4 +64,5 @@
             </Grid>
         </Grid>
     </Grid>
+    </DockPanel>
 </Window>

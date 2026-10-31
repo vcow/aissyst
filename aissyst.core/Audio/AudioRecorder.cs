@@ -1,8 +1,6 @@
 using System.Runtime.InteropServices;
-using aissyst.core;
-using aissyst.core.Audio;
 
-namespace aissyst.console;
+namespace aissyst.core.Audio;
 
 internal sealed class AudioRecorder(IApplicationSettings settings) : IDisposable
 {

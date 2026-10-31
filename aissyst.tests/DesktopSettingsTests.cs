@@ -120,23 +120,17 @@ public sealed class DesktopSettingsTests : IDisposable
 			var menu = NativeMenu.GetMenu(Application.Current!)!;
 			Assert.Same(exportedMenu, menu);
 			Assert.Same(nativeHolder, menu.Parent);
+			Assert.Equal("Aisyst", nativeHolder.Header);
 			Assert.DoesNotContain(menu.Items.OfType<NativeMenuItem>(), item => item.Header == "About Avalonia");
 			Assert.Equal("Settings…", Assert.IsType<NativeMenuItem>(menu.Items[0]).Header);
-			Assert.Equal("Show Log", Assert.IsType<NativeMenuItem>(menu.Items[1]).Header);
-			Assert.Equal("Quit", Assert.IsType<NativeMenuItem>(menu.Items[3]).Header);
+			Assert.IsType<NativeMenuItemSeparator>(menu.Items[1]);
+			Assert.Equal("Quit", Assert.IsType<NativeMenuItem>(menu.Items[2]).Header);
 			Assert.NotNull(NativeDock.GetMenu(Application.Current!));
 			main.Close();
-			if (OperatingSystem.IsMacOS())
-			{
-				Assert.False(main.IsVisible);
-			}
-			else
-			{
-				Assert.Equal(WindowState.Minimized, main.WindowState);
-			}
+			Assert.False(main.IsVisible);
 			Assert.False(closed);
 			Assert.Equal(0, quitCalls);
-			((INativeMenuItemExporterEventsImplBridge)exportedMenu.Items[1]).RaiseClicked();
+			((INativeMenuItemExporterEventsImplBridge)NativeMenu.GetMenu(main)!.Items.OfType<NativeMenuItem>().Single(item => item.Header == "Windows").Menu!.Items[0]).RaiseClicked();
 			Assert.True(main.IsVisible);
 			((INativeMenuItemExporterEventsImplBridge)exportedMenu.Items[0]).RaiseClicked();
 			Assert.True(dialogs.Window!.IsVisible);
@@ -145,14 +139,14 @@ public sealed class DesktopSettingsTests : IDisposable
 			laterWindow.Show();
 			Assert.False(laterWindow.IsEnabled);
 			var settingsWindow = dialogs.Window;
-			Click(main, "SettingsMenuItem", MenuItem.ClickEvent);
+			((INativeMenuItemExporterEventsImplBridge)exportedMenu.Items[0]).RaiseClicked();
 			Assert.Same(settingsWindow, dialogs.Window);
 			dialogs.Close();
 			await dialogs.WaitForCloseAsync();
 			Assert.True(main.IsEnabled);
 			Assert.True(wizard.IsEnabled);
 			Assert.True(laterWindow.IsEnabled);
-			((INativeMenuItemExporterEventsImplBridge)exportedMenu.Items[3]).RaiseClicked();
+			((INativeMenuItemExporterEventsImplBridge)exportedMenu.Items[2]).RaiseClicked();
 			Assert.Equal(1, quitCalls);
 			shell.PrepareShutdown();
 			shell.AllowClose();

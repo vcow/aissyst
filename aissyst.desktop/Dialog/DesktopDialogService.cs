@@ -5,6 +5,7 @@ using Avalonia.Threading;
 using aissyst.core.Processor;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Views;
+using aissyst.desktop.State;
 using Microsoft.Extensions.Logging;
 
 namespace aissyst.desktop.Dialog;
@@ -17,7 +18,8 @@ internal sealed class DialogSaveTarget(string name, Func<Task<Stream>> openWrite
 }
 
 internal sealed class DesktopDialogService(DialogViewModel model, ILogger<DesktopDialogService> logger,
-	Func<FilePickerSaveOptions, Task<DialogSaveTarget?>>? savePicker = null) : IAsyncDisposable
+	Func<FilePickerSaveOptions, Task<DialogSaveTarget?>>? savePicker = null,
+	DesktopWindowState? windowState = null) : IAsyncDisposable
 {
 	private readonly CancellationTokenSource _shutdown = new();
 	private bool _closing;
@@ -25,12 +27,20 @@ internal sealed class DesktopDialogService(DialogViewModel model, ILogger<Deskto
 	private Task? _disposal;
 	internal DialogWindow? Window { get; private set; }
 
-	public void Show()
+	public void OpenAtStartup()
 	{
-		if (_closing)
+		if (!_closing)
 		{
-			return;
+			CreateWindow();
+			if (windowState?.ShouldShow("dialog") ?? true)
+			{
+				Show();
+			}
 		}
+	}
+
+	private void CreateWindow()
+	{
 		if (Window == null)
 		{
 			Window = new DialogWindow { DataContext = model };
@@ -42,8 +52,18 @@ internal sealed class DesktopDialogService(DialogViewModel model, ILogger<Deskto
 					Window.Hide();
 				}
 			};
+			windowState?.Attach(Window, "dialog");
 		}
-		Window.Show();
+	}
+
+	public void Show()
+	{
+		if (_closing)
+		{
+			return;
+		}
+		CreateWindow();
+		Window!.Show();
 		if (Window.WindowState == WindowState.Minimized)
 		{
 			Window.WindowState = WindowState.Normal;

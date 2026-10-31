@@ -14,7 +14,7 @@ internal sealed class DialogEntryViewModel(DialogMessage message) : ViewModel
 	public DialogMessage Message { get; private set; } = message;
 	public string Text => Message.Text;
 	public string Header => $"{Role(Message.Source)} · {Message.Timestamp.ToLocalTime():HH:mm:ss}";
-	public IBrush Foreground => Message.Source == AudioSourceType.Microphone ? Brushes.LightGray : Brushes.White;
+	public IBrush Foreground => Message.Source == AudioSourceType.Microphone ? Brushes.LightBlue : Brushes.White;
 	public Thickness Spacing => new(Message.Source == AudioSourceType.Microphone ? 28 : 10, 12, 10, 12);
 
 	public void Update(DialogMessage value)

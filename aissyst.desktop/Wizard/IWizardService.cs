@@ -17,6 +17,8 @@ internal sealed record WizardPage(string Title, string Description, IReadOnlyLis
 	public bool IsTemplatePath { get; init; }
 	public string Path { get; init; } = string.Empty;
 	public string Error { get; init; } = string.Empty;
+	public bool IsAction { get; init; }
+	public string ActionLabel { get; init; } = "Next";
 }
 
 internal interface IWizardService

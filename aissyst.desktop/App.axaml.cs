@@ -7,6 +7,8 @@ using aissyst.core.Controller;
 using aissyst.desktop.ViewModels;
 using aissyst.desktop.Settings;
 using aissyst.desktop.Dialog;
+using aissyst.desktop.Interview;
+using aissyst.desktop.State;
 using aissyst.desktop.Views;
 using aissyst.desktop.Wizard;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,20 +35,31 @@ public partial class App : Application
 			var log = new LogViewModel();
 			var main = new MainWindow { DataContext = log };
 			var settings = new DesktopSettingsStore();
-			_services = DesktopServices.Create(main, log, settings).BuildServiceProvider(
+			var windowStatePath = Path.Combine(
+				Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "aissyst", "desktop-ui-state.json");
+			var windowState = new DesktopWindowState(windowStatePath);
+			_services = DesktopServices.Create(main, log, settings, windowState).BuildServiceProvider(
 				new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
 			_settingsDialog = new DesktopSettingsDialog(settings, () => main, () => desktop.Windows,
-				_services.GetRequiredService<ILogger<SettingsWindow>>());
+				_services.GetRequiredService<ILogger<SettingsWindow>>(), windowState);
 			_shell = new DesktopApplicationShell(this, main, _settingsDialog, () => BeginShutdown(desktop),
 				_services.GetRequiredService<ILogger<DesktopApplicationShell>>(),
-				_services.GetRequiredService<DesktopDialogService>());
+				_services.GetRequiredService<DesktopDialogService>(), windowState,
+				_services.GetRequiredService<DesktopInterview>());
+			var stateLogger = _services.GetRequiredService<ILogger<DesktopWindowState>>();
+			windowState.SaveFailed += exception => stateLogger.LogWarning(exception, "Failed to save window geometry and visibility.");
+			stateLogger.LogInformation("Window state file: {Path}. Loaded log: {LogState}; dialog: {DialogState}.",
+				windowStatePath, windowState.Get("log"), windowState.Get("dialog"));
+			if (windowState.LoadError != null)
+			{
+				stateLogger.LogWarning(windowState.LoadError, "Failed to load window state. Using default window placement and visibility.");
+			}
 			if (settings.LoadError != null)
 			{
 				_services.GetRequiredService<ILogger<App>>().LogWarning(settings.LoadError,
 					"Failed to load desktop settings. Using defaults; open Settings to save corrected values.");
 			}
 			desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-			desktop.MainWindow = main;
 			if (TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activation)
 			{
 				activation.Activated += (_, args) =>
@@ -57,7 +70,8 @@ public partial class App : Application
 					}
 				};
 			}
-			main.Opened += (_, _) => Dispatcher.UIThread.Post(() =>
+			_shell.OpenStartupWindows();
+			Dispatcher.UIThread.Post(() =>
 			{
 				if (!_stopping && _startup == null)
 				{
@@ -86,9 +100,9 @@ public partial class App : Application
 			logger.LogInformation("Desktop application started. Complete setup to connect to the LLM.");
 			await Task.Run(() => services.GetRequiredService<ApplicationController>().InitializeAsync(cancellation.Token), cancellation.Token);
 			cancellation.Token.ThrowIfCancellationRequested();
-			logger.LogInformation("Setup completed. The LLM session is ready. Audio sources are configured; capture has not started.");
+			logger.LogInformation("Setup completed. Press Start in the setup window to begin listening.");
+			await services.GetRequiredService<DesktopInterview>().WaitForStartAsync(cancellation.Token);
 			await wizard.CompleteAsync();
-			_shell?.ShowDialog();
 		}
 		catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 		{
@@ -113,6 +127,10 @@ public partial class App : Application
 		try
 		{
 			await _shutdown.CancelAsync();
+			if (_shell != null)
+			{
+				await _shell.WaitForCommandsAsync();
+			}
 			_settingsDialog?.Close();
 			if (_settingsDialog != null)
 			{

@@ -90,6 +90,9 @@ internal sealed class DesktopCaptureSession(IAudioCapture capture, IApplicationS
 		}
 	}
 
+	internal void Publish(AudioSourceType source, AudioRecording recording) =>
+		Publish(source, [new AudioFrame(recording.Samples, recording.Format, TimeSpan.Zero)]);
+
 	public void Dispose()
 	{
 		_disposed = true;
